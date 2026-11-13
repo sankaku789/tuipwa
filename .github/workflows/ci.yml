@@ -1,0 +1,133 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+# 同じブランチの古い実行は打ち切る（push と pull_request の二重実行も畳む）。
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  lint-test:
+    name: fmt / clippy / test
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Rust ツールチェーン
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: システム依存（build.rs が gio-2.0 を要求する）
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config libglib2.0-dev python3
+
+      - name: Cargo キャッシュ
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - run: cargo fmt --all --check
+      - run: cargo clippy --locked --all-targets -- -D warnings
+      - run: make test
+
+  build:
+    name: build (Debian 13)
+    runs-on: ubuntu-24.04
+    container: debian:13
+    timeout-minutes: 120
+    steps:
+      - name: git を用意（checkout より前）
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends git ca-certificates
+        working-directory: /
+
+      - uses: actions/checkout@v4
+
+      - name: システム依存（README のビルド手順と同じ）
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            build-essential cmake ninja-build pkg-config git curl ca-certificates patch \
+            python3 xz-utils binutils \
+            libgtk-4-dev libadwaita-1-dev libgtk4-layer-shell-dev \
+            libglib2.0-dev gobject-introspection libgirepository1.0-dev \
+            blueprint-compiler gettext libfontconfig1-dev libfreetype-dev \
+            libharfbuzz-dev libpng-dev zlib1g-dev libonig-dev libxml2-dev \
+            libwayland-dev wayland-protocols libxkbcommon-dev \
+            libegl1-mesa-dev libgl-dev libgl1-mesa-dri \
+            libx11-dev libxcursor-dev libxi-dev libxrandr-dev \
+            libspirv-cross-c-shared-dev adwaita-icon-theme hicolor-icon-theme \
+            fonts-dejavu-core nano
+
+      - name: Rust ツールチェーン
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+            | sh -s -- -y --profile minimal
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      # Zig・Ghostty ソース・zig build キャッシュは ~/.cache/tuipwa-native に貯まる。
+      # Makefile かパッチが変わるとキーが変わり、古いキャッシュは使われない。
+      - name: ビルドキャッシュ
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/tuipwa-native
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: native-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'Makefile', 'native/linux/patches/0001-window-identity.patch') }}
+          restore-keys: native-${{ runner.os }}-
+
+      - name: make
+        run: make
+
+      - name: 配布境界とライセンス通知の検査
+        run: make check-dist
+
+      - name: ユーザー領域へのインストール（隔離先）
+        run: |
+          CARGO_INSTALL_ROOT="$RUNNER_TEMP/tuipwa-install/cargo" \
+            XDG_DATA_HOME="$RUNNER_TEMP/tuipwa-install/data" make install
+          "$RUNNER_TEMP/tuipwa-install/cargo/bin/tuipwa" --help > /dev/null
+          test -x "$RUNNER_TEMP/tuipwa-install/data/tuipwa/native/bin/ghostty-host"
+          test -s "$RUNNER_TEMP/tuipwa-install/data/tuipwa/native/share/licenses/ghostty/LICENSE"
+          test -s "$RUNNER_TEMP/tuipwa-install/data/tuipwa/native/THIRD_PARTY_NOTICES.md"
+
+      - name: スモークテスト（ホスト不要のコマンドのみ）
+        run: |
+          export XDG_CONFIG_HOME="$RUNNER_TEMP/tuipwa-ci/cfg"
+          export XDG_DATA_HOME="$RUNNER_TEMP/tuipwa-ci/data"
+          ./dist/bin/tuipwa --help > /dev/null
+          ./dist/bin/tuipwa add /usr/bin/nano --id ci-smoke --name "CI smoke" \
+            --category System --category Monitor
+          ./dist/bin/tuipwa list
+          ./dist/bin/tuipwa show ci-smoke
+          ./dist/bin/tuipwa show ci-smoke | grep -F 'カテゴリ: System;Monitor;'
+          grep -qx 'Categories=System;Monitor;' \
+            "$XDG_DATA_HOME/applications/tuipwa-ci-smoke.desktop"
+          ./dist/bin/tuipwa update ci-smoke --reset-categories
+          grep -qx 'Categories=Utility;' \
+            "$XDG_DATA_HOME/applications/tuipwa-ci-smoke.desktop"
+          test -s "$XDG_DATA_HOME/tuipwa/icons/ci-smoke.png"
+          ./dist/bin/tuipwa remove ci-smoke
+          ./dist/bin/ghostty-host +version

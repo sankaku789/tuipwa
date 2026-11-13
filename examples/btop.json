@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "id": "btop",
+  "name": "btop",
+  "title": "btop — TuiPWA Native",
+  "mode": "native",
+  "command": "btop",
+  "arguments": [],
+  "workingDirectory": "."
+}

@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "id": "nano",
+  "name": "nano",
+  "title": "nano — TuiPWA Native",
+  "mode": "native",
+  "command": "nano",
+  "arguments": [],
+  "workingDirectory": "."
+}

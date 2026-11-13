@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "id": "vim",
+  "name": "vim",
+  "title": "vim — TuiPWA Native",
+  "mode": "native",
+  "command": "vim",
+  "arguments": [],
+  "workingDirectory": "."
+}

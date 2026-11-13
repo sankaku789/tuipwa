@@ -1,0 +1,123 @@
+diff --git a/src/apprt/gtk/class/Overrides.zig b/src/apprt/gtk/class/Overrides.zig
+index 17f3b2a..fd2a7cc 100644
+--- a/src/apprt/gtk/class/Overrides.zig
++++ b/src/apprt/gtk/class/Overrides.zig
+@@ -15,6 +15,8 @@ command: ?configpkg.Command,
+ shell_integration: ?configpkg.Config.ShellIntegration,
+ working_directory: ?[:0]const u8,
+ title: ?[:0]const u8,
++// TuiPWA: per-window identity, deliberately independent of GApplication ID.
++tuipwa_app_id: ?[:0]const u8 = null,
+ 
+ pub const none: Overrides = .{
+     .command = null,
+@@ -28,6 +30,7 @@ pub fn parse(arena_alloc: Allocator, arguments_it: *glib.VariantIter) ParseError
+ 
+     var working_directory: ?[:0]const u8 = null;
+     var title: ?[:0]const u8 = null;
++    var tuipwa_app_id: ?[:0]const u8 = null;
+     var command: ?configpkg.Command = null;
+     var parsed_shell_integration: struct {
+         @"shell-integration": ?configpkg.Config.ShellIntegration = null,
+@@ -93,15 +96,20 @@ pub fn parse(arena_alloc: Allocator, arguments_it: *glib.VariantIter) ParseError
+         }
+ 
+         if (std.mem.cutPrefix(u8, str, "--working-directory=")) |v| {
+-            working_directory = arena_alloc.dupeSentinel(u8, std.mem.trim(u8, v, &std.ascii.whitespace), 0) catch |err| {
++            working_directory = arena_alloc.dupeSentinel(u8, v, 0) catch |err| {
+                 log.warn("unable to duplicate working directory: {t}", .{err});
+                 return err;
+             };
+             continue;
+         }
+ 
++        if (std.mem.cutPrefix(u8, str, "--tuipwa-app-id=")) |v| {
++            tuipwa_app_id = try arena_alloc.dupeSentinel(u8, v, 0);
++            continue;
++        }
++
+         if (std.mem.cutPrefix(u8, str, "--title=")) |v| {
+-            title = arena_alloc.dupeSentinel(u8, std.mem.trim(u8, v, &std.ascii.whitespace), 0) catch |err| {
++            title = arena_alloc.dupeSentinel(u8, v, 0) catch |err| {
+                 log.warn("unable to duplicate title: {t}", .{err});
+                 return err;
+             };
+@@ -120,5 +128,6 @@ pub fn parse(arena_alloc: Allocator, arguments_it: *glib.VariantIter) ParseError
+         .shell_integration = parsed_shell_integration.@"shell-integration",
+         .working_directory = working_directory,
+         .title = title,
++        .tuipwa_app_id = tuipwa_app_id,
+     };
+ }
+diff --git a/src/apprt/gtk/class/application.zig b/src/apprt/gtk/class/application.zig
+index 08d5d7c..429a53f 100644
+--- a/src/apprt/gtk/class/application.zig
++++ b/src/apprt/gtk/class/application.zig
+@@ -51,6 +51,7 @@ const Overrides = @import("Overrides.zig");
+ const log = std.log.scoped(.gtk_ghostty_application);
+ 
+ extern "c" fn setenv(name: ?[*]const u8, value: ?[*]const u8, overwrite: c_int) c_int;
++extern "c" fn gdk_wayland_toplevel_set_application_id(toplevel: *anyopaque, application_id: [*:0]const u8) void;
+ 
+ /// Function used to funnel GLib/GObject/GTK log messages into Zig's logging
+ /// system rather than just getting dumped directly to stderr.
+@@ -559,6 +560,18 @@ pub const Application = extern struct {
+             return;
+         }
+ 
++        // A launcher that dies before its first request must not leave a daemon.
++        const startup_watchdog = if (priv.config.get().class) |class|
++            if (std.mem.eql(u8, class, "org.tuipwa.NativeHost"))
++                glib.timeoutAdd(30_000, handleTuipwaStartupTimeout, self)
++            else
++                0
++        else
++            0;
++        defer if (startup_watchdog != 0) {
++            _ = glib.Source.remove(startup_watchdog);
++        };
++
+         // Tell systemd that we are ready.
+         systemd.notify.ready();
+         priv.systemd_ready = true;
+@@ -1584,6 +1597,12 @@ pub const Application = extern struct {
+         self.quitNow();
+     }
+ 
++    fn handleTuipwaStartupTimeout(ud: ?*anyopaque) callconv(.c) c_int {
++        const self: *Self = @ptrCast(@alignCast(ud));
++        if (!self.private().requested_window) self.quitNow();
++        return 1;
++    }
++
+     fn handleQuitTimerExpired(ud: ?*anyopaque) callconv(.c) c_int {
+         const self: *Self = @ptrCast(@alignCast(ud));
+         const priv = self.private();
+@@ -1828,6 +1847,7 @@ pub const Application = extern struct {
+                 .shell_integration = o.shell_integration,
+                 .working_directory = o.working_directory,
+                 .title = o.title,
++                .tuipwa_app_id = o.tuipwa_app_id,
+             } else .none,
+         ) catch |err| {
+             log.warn("unable to create new window: {t}", .{err});
+@@ -2573,6 +2593,19 @@ const Action = struct {
+                 .title = overrides.title,
+             },
+         );
++        // GTK 4.18's setter is a no-op before the xdg_toplevel exists:
++        // GtkWidget.realize alone is insufficient. present creates it.
++        // Set after present; GTK's initial wire ID is briefly the shared ID.
++        if (overrides.tuipwa_app_id) |app_id| {
++            if (win.as(gtk.Native).getSurface()) |surface| {
++                const gdk_wayland = @import("gdk_wayland");
++                if (gobject.ext.cast(gdk_wayland.WaylandDisplay, surface.getDisplay()) != null) {
++                    gdk_wayland_toplevel_set_application_id(surface, app_id.ptr);
++                }
++            }
++            // Keep Ghostty's valid themed icon as a toolkit/X11 fallback.
++            // Wayland taskbars resolve the app-specific Icon from its .desktop.
++        }
+     }
+ 
+     fn initAndShowWindow(
