@@ -13,16 +13,39 @@ TUI アプリを、独立したデスクトップアプリのように使える 
 
 ## インストール
 
-必要な依存パッケージは以下です（ライブラリは開発ファイルを含みます）。
+### 1. Rust / Cargo を導入
 
-- [Rust / Cargo](https://www.rust-lang.org/tools/install)（stable）
-- C/C++ コンパイラ、Make、CMake、Ninja、pkg-config、Git、curl、CA 証明書、patch、Python 3、binutils、xz
-- GTK 4、libadwaita、gtk4-layer-shell、GLib / GIO / GObject、GObject Introspection、Blueprint、gettext
-- fontconfig、FreeType、HarfBuzz、libpng、zlib、Oniguruma、libxml2、SPIRV-Cross
-- Wayland、wayland-protocols、libxkbcommon、X11、libXcursor、libXi、libXrandr、EGL / OpenGL
-- Adwaita / hicolor アイコンテーマ、システムフォント
+[Rust の公式インストール手順](https://www.rust-lang.org/tools/install)に従い、stable ツールチェーンを導入してください（edition 2024 対応）。`rustc --version` と `cargo --version` が実行できることを確認します。
 
-Zig はビルド時に自動取得します。
+### 2. OS のパッケージでツール・ライブラリを導入
+
+以下は**パッケージ名ではなく、必要なツール・ライブラリの名前**です。お使いの OS のパッケージマネージャーで、対応するパッケージを導入してください。
+
+**ライブラリは実行用だけでなく、ヘッダーや pkg-config 設定を含む開発用パッケージも必要です。** 開発用が別パッケージの場合、名前の末尾が `-dev` や `-devel` になっていることがあります。
+
+| 用途 | 導入するもの |
+|---|---|
+| コンパイル・ビルド | C/C++ コンパイラ、Make、CMake、Ninja、pkg-config、Python 3、binutils |
+| ソース取得・展開・パッチ適用 | Git、curl、CA 証明書、patch、xz |
+| ウィンドウ・UI | GTK 4、libadwaita、gtk4-layer-shell |
+| GLib 基盤・リソース生成 | GLib / GIO / GObject、GObject Introspection、Blueprint コンパイラ、gettext |
+| フォント・文字描画 | fontconfig、FreeType、HarfBuzz |
+| 画像・圧縮・正規表現・XML | libpng、zlib、Oniguruma、libxml2 |
+| GPU 描画 | SPIRV-Cross、EGL / OpenGL（実行環境に合ったグラフィックスドライバーも必要です） |
+| Wayland / X11・キー入力 | Wayland、wayland-protocols、libxkbcommon、X11、libXcursor、libXi、libXrandr |
+| アイコン・表示用フォント | Adwaita / hicolor アイコンテーマ、システムフォント |
+
+用途やビルド時の扱いの詳細は [依存ライブラリ・ツール](CONTRIBUTING.md#依存ライブラリツール)を参照してください。
+
+### 3. TuiPWA をビルド・インストール
+
+`make` はダウンロード・ビルドの前に、主なコマンドと開発ライブラリの不足をチェックします。チェックだけを実行する場合は、リポジトリ内で `make check-deps` を使います。不足があれば一覧を表示して停止します（バージョン互換性や GUI 実行環境を保証するものではありません）。
+
+次のものはビルド時に自動取得するため、**手動での導入は不要**です。初回のビルドにはインターネット接続が必要です。
+
+- Zig：`make` が所定のバージョンを取得します。
+- 専用 Ghostty ホスト：`make` がソースを取得し、パッチを適用してビルドします。通常の Ghostty を別途インストールする必要はありません。
+- Rust クレート：Cargo が `Cargo.lock` に従って取得します。
 
 ```sh
 git clone https://github.com/sankaku789/tuipwa.git

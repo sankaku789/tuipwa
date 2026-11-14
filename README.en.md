@@ -13,16 +13,39 @@ A Linux x64 launcher that makes TUI programs feel like standalone desktop apps. 
 
 ## Installation
 
-Required dependencies (including development files for libraries):
+### 1. Install Rust / Cargo
 
-- [Rust / Cargo](https://www.rust-lang.org/tools/install) (stable)
-- C/C++ compiler, Make, CMake, Ninja, pkg-config, Git, curl, CA certificates, patch, Python 3, binutils, xz
-- GTK 4, libadwaita, gtk4-layer-shell, GLib / GIO / GObject, GObject Introspection, Blueprint, gettext
-- fontconfig, FreeType, HarfBuzz, libpng, zlib, Oniguruma, libxml2, SPIRV-Cross
-- Wayland, wayland-protocols, libxkbcommon, X11, libXcursor, libXi, libXrandr, EGL / OpenGL
-- Adwaita / hicolor icon themes and system fonts
+Follow the [official Rust installation instructions](https://www.rust-lang.org/tools/install) to install the stable toolchain (with edition 2024 support). Check that `rustc --version` and `cargo --version` work.
 
-Zig is downloaded automatically during the build.
+### 2. Install system tools and libraries
+
+The table below lists **tool and library names, not package names**. Use your OS package manager to install the corresponding packages.
+
+**Libraries need development files, including headers and pkg-config metadata, not just runtime packages.** Where packaged separately, development packages often have a `-dev` or `-devel` suffix.
+
+| Purpose | What to install |
+|---|---|
+| Compilation and build tools | C/C++ compiler, Make, CMake, Ninja, pkg-config, Python 3, binutils |
+| Source download, extraction, and patching | Git, curl, CA certificates, patch, xz |
+| Windows and UI | GTK 4, libadwaita, gtk4-layer-shell |
+| GLib infrastructure and resource generation | GLib / GIO / GObject, GObject Introspection, Blueprint compiler, gettext |
+| Fonts and text rendering | fontconfig, FreeType, HarfBuzz |
+| Images, compression, regular expressions, and XML | libpng, zlib, Oniguruma, libxml2 |
+| GPU rendering | SPIRV-Cross, EGL / OpenGL (a graphics driver suitable for your system is also required) |
+| Wayland / X11 and keyboard input | Wayland, wayland-protocols, libxkbcommon, X11, libXcursor, libXi, libXrandr |
+| Icons and display fonts | Adwaita / hicolor icon themes, system fonts |
+
+See [dependencies and tools](CONTRIBUTING.md#依存ライブラリツール) (Japanese) for details on their roles and build-time handling.
+
+### 3. Build and install TuiPWA
+
+Before downloading or compiling, `make` checks for common missing commands and development libraries. To run only this check, use `make check-deps` inside the repository. Missing items are listed together and the build stops (this does not guarantee version compatibility or a working GUI environment). Diagnostics are currently in Japanese.
+
+The following are downloaded automatically during the build; **do not install them manually**. The first build requires an internet connection.
+
+- Zig: `make` downloads the required version.
+- Dedicated Ghostty host: `make` downloads, patches, and builds the source. A separate installation of standard Ghostty is not required.
+- Rust crates: Cargo downloads them according to `Cargo.lock`.
 
 ```sh
 git clone https://github.com/sankaku789/tuipwa.git

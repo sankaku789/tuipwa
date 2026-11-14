@@ -12,7 +12,7 @@ SHELL := /bin/bash
 .SHELLFLAGS := -eu -o pipefail -c
 .ONESHELL:
 .DEFAULT_GOAL := all
-.PHONY: all install test lint check-dist
+.PHONY: all install test lint check-dist check-deps
 
 ROOT := $(patsubst %/,%,$(dir $(abspath $(lastword $(MAKEFILE_LIST)))))
 PREFIX := $(ROOT)/dist
@@ -61,7 +61,11 @@ with (out / 'rust-dependencies.tsv').open('w') as inventory:
 endef
 export RUST_LICENSES_PY
 
-all:
+check-deps:
+	@command -v python3 >/dev/null || { printf '%s\n' '依存チェックに Python 3 が必要です。OS のパッケージで python3 を導入してください。' >&2; exit 1; }
+	python3 "$(ROOT)/native/linux/check-deps.py"
+
+all: check-deps
 	cd "$(ROOT)"
 	mkdir -p "$(CACHE)"
 	fetch() {
