@@ -74,11 +74,22 @@ Registered apps also appear in your desktop application menu. `run`, `show`, `up
 |---|---|
 | `tuipwa add <command>` | Register an app |
 | `tuipwa run <id> [id ...]` | Launch registered apps |
+| `tuipwa run <id> -- <file>...` | Open files in a registered app |
 | `tuipwa list` | List registered apps |
 | `tuipwa show <id>` | Show registration details |
 | `tuipwa update <id> [options]` | Update only the specified fields |
 | `tuipwa remove <id>` | Remove a registration, not the TUI program itself |
 | `tuipwa validate <manifest.json>` | Validate a manifest |
+
+### Open files in a registered app
+
+```sh
+tuipwa run nano -- ./memo.txt "./notes with spaces.txt"
+```
+
+Specify exactly one registration ID before `--`, followed by local file paths. Files are appended to the registered arguments for this launch only. Relative paths become absolute paths based on the **directory from which you invoke the command**. Files do not need to exist yet. The app's working directory and saved registration remain unchanged.
+
+Everything after `--` is treated as a file path. Register app options using `add` / `update` instead. URLs are not interpreted, and arguments are not reinterpreted by a shell. Automatic registration for KDE or other desktops' “Open With” menus and default file associations is not supported yet.
 
 ### Name, arguments, and working directory
 

@@ -1420,6 +1420,114 @@ fn the_registration_is_isolated_from_the_real_xdg_directories() {
 }
 
 #[test]
+fn run_files_append_absolute_paths_without_changing_the_registration() {
+    let t = Temp::new();
+    let c = context(&t);
+    executable(&t, "nano");
+    cli::execute(
+        &args(&[
+            "add",
+            "nano",
+            "--cwd",
+            c.home.to_str().unwrap(),
+            "--",
+            "--linenumbers",
+        ]),
+        &c,
+    )
+    .unwrap();
+    let paths = [
+        c.registry.manifest_path("nano").unwrap(),
+        c.registry.meta_path("nano").unwrap(),
+        c.registry.desktop_path("nano").unwrap(),
+    ];
+    let before: Vec<_> = paths.iter().map(|path| fs::read(path).unwrap()).collect();
+    let absolute = t.path("absolute.txt");
+    let files = [
+        "new file.txt",
+        "日本語.txt",
+        "-filename",
+        "$(touch NEVER)",
+        "link/../memo.txt",
+        "line\nbreak.txt",
+        absolute.to_str().unwrap(),
+    ];
+    let mut command = args(&["nano", "--"]);
+    command.extend(args(&files));
+    let mut apps = cli::prepare_run_apps(&command, &c).unwrap();
+    assert_eq!(apps.len(), 1);
+    let request = LaunchRequest::new(apps.remove(0), "request".into());
+    let mut expected = args(&["--linenumbers"]);
+    expected.extend(
+        files
+            .iter()
+            .map(|file| c.cwd.join(file).to_str().unwrap().to_owned()),
+    );
+    assert_eq!(request.arguments, expected);
+    assert_eq!(request.working_directory, c.home.to_str().unwrap());
+    assert!(!t.path("new file.txt").exists());
+    assert!(!t.path("NEVER").exists());
+    for (path, bytes) in paths.iter().zip(before) {
+        assert_eq!(fs::read(path).unwrap(), bytes);
+    }
+}
+
+#[test]
+fn run_without_files_keeps_multiple_ids_and_registered_arguments() {
+    let t = Temp::new();
+    let c = context(&t);
+    for id in ["nano", "vim"] {
+        executable(&t, id);
+        cli::execute(&args(&["add", id, "--", "registered.txt"]), &c).unwrap();
+    }
+    let apps = cli::prepare_run_apps(&args(&["nano", "vim"]), &c).unwrap();
+    assert_eq!(
+        apps.iter().map(|app| app.id.as_str()).collect::<Vec<_>>(),
+        ["nano", "vim"]
+    );
+    for app in apps {
+        assert_eq!(app.arguments, args(&["registered.txt"]));
+    }
+    let apps = cli::prepare_run_apps(&args(&["nano", "--"]), &c).unwrap();
+    assert_eq!(apps[0].arguments, args(&["registered.txt"]));
+}
+
+#[test]
+fn run_rejects_ambiguous_or_invalid_file_arguments_before_launch() {
+    let t = Temp::new();
+    let c = context(&t);
+    executable(&t, "nano");
+    cli::execute(&args(&["add", "nano"]), &c).unwrap();
+    assert_eq!(cli::execute(&args(&["run"]), &c).unwrap(), 2);
+    for command in [
+        args(&["--", "memo.txt"]),
+        args(&["nano", "nano", "--", "memo.txt"]),
+        args(&["nano", "--", ""]),
+        args(&["nano", "--", "bad\0path"]),
+        args(&["nano", "memo.txt"]),
+        args(&["missing", "--", "memo.txt"]),
+    ] {
+        assert!(cli::prepare_run_apps(&command, &c).is_err(), "{command:?}");
+    }
+}
+
+#[test]
+fn run_file_paths_preserve_symlink_parent_semantics() {
+    let t = Temp::new();
+    let c = context(&t);
+    executable(&t, "nano");
+    cli::execute(&args(&["add", "nano"]), &c).unwrap();
+    fs::create_dir_all(t.path("target/sub")).unwrap();
+    fs::write(t.path("target/memo.txt"), "correct file").unwrap();
+    std::os::unix::fs::symlink(t.path("target/sub"), t.path("link")).unwrap();
+    let apps = cli::prepare_run_apps(&args(&["nano", "--", "link/../memo.txt"]), &c).unwrap();
+    assert_eq!(
+        fs::read_to_string(&apps[0].arguments[0]).unwrap(),
+        "correct file"
+    );
+}
+
+#[test]
 fn the_desktop_entry_calls_the_public_launcher() {
     let t = Temp::new();
     let c = context(&t);

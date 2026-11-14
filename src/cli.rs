@@ -19,7 +19,13 @@ const USAGE_JA: &str = "\
   tuipwa show <id>
   tuipwa update <id> [オプション] [-- <引数>...]
   tuipwa run <id> [id ...]
+  tuipwa run <id> -- <ファイル>...
   tuipwa validate <manifest.json>
+
+run のファイル指定:
+  登録済み引数の後ろに、今回だけ使うローカルファイルを追加します。
+  相対パスは実行元のディレクトリを基準に絶対パス化します。
+  -- の前は登録IDを1つだけ指定します。未作成ファイルも指定できます。
 
 add のオプション:
   --id <id>            登録ID（既定は実行ファイル名）
@@ -52,7 +58,13 @@ Usage:
   tuipwa show <id>
   tuipwa update <id> [options] [-- <args>...]
   tuipwa run <id> [id ...]
+  tuipwa run <id> -- <file>...
   tuipwa validate <manifest.json>
+
+Run with files:
+  Append local files to the registered arguments for this launch only.
+  Relative paths become absolute paths based on the caller's directory.
+  Use exactly one ID before -- and specify files after it, even new files.
 
 Add options:
   --id <id>            Registration ID (default: executable name)
@@ -862,12 +874,7 @@ fn run_apps(args: &[String], context: &Context) -> Result<i32> {
     if args.is_empty() {
         return usage_error("run には登録IDを指定してください");
     }
-    let registry = &context.registry;
-    let apps = args
-        .iter()
-        .map(|id| registry.load(id))
-        .collect::<Result<Vec<_>>>()?;
-    for app in apps {
+    for app in prepare_run_apps(args, context)? {
         let ack = crate::platform::linux::runtime::launch(&crate::model::LaunchRequest::new(
             app,
             crate::platform::linux::runtime::request_id()?,
@@ -878,6 +885,42 @@ fn run_apps(args: &[String], context: &Context) -> Result<i32> {
         }
     }
     Ok(0)
+}
+
+/// Load all registrations before launching; file arguments are transient.
+pub(crate) fn prepare_run_apps(args: &[String], context: &Context) -> Result<Vec<Manifest>> {
+    let (ids, files) = match args.iter().position(|arg| arg == "--") {
+        Some(separator) => {
+            if separator != 1 {
+                return Err("ファイル指定時は -- の前に登録IDを1つ指定してください".into());
+            }
+            (&args[..separator], &args[separator + 1..])
+        }
+        None => (args, &[][..]),
+    };
+    let files = files
+        .iter()
+        .map(|file| {
+            if file.is_empty() || file.contains('\0') {
+                return Err("ファイルパスに空文字・NULは使えません".into());
+            }
+            // Do not canonicalize: new files are allowed, and symlink/.. must
+            // retain its filesystem meaning. join preserves absolute paths.
+            Ok(context
+                .cwd
+                .join(file)
+                .to_str()
+                .ok_or("非UTF-8パス")?
+                .to_owned())
+        })
+        .collect::<Result<Vec<_>>>()?;
+    ids.iter()
+        .map(|id| {
+            let mut app = context.registry.load(id)?;
+            app.arguments.extend(files.iter().cloned());
+            Ok(app)
+        })
+        .collect()
 }
 
 /// Resolves a command into an absolute path of an executable regular file.
