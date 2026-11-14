@@ -34,6 +34,7 @@ The table below lists **tool and library names, not package names**. Use your OS
 | GPU rendering | SPIRV-Cross, EGL / OpenGL (a graphics driver suitable for your system is also required) |
 | Wayland / X11 and keyboard input | Wayland, wayland-protocols, libxkbcommon, X11, libXcursor, libXi, libXrandr |
 | Icons and display fonts | Adwaita / hicolor icon themes, system fonts |
+| Refreshing Open With candidates (when used) | `update-desktop-database` from desktop-file-utils |
 
 See [dependencies and tools](CONTRIBUTING.md#依存ライブラリツール) (Japanese) for details on their roles and build-time handling.
 
@@ -74,11 +75,39 @@ Registered apps also appear in your desktop application menu. `run`, `show`, `up
 |---|---|
 | `tuipwa add <command>` | Register an app |
 | `tuipwa run <id> [id ...]` | Launch registered apps |
+| `tuipwa run <id> -- <file>...` | Open files in a registered app |
 | `tuipwa list` | List registered apps |
 | `tuipwa show <id>` | Show registration details |
 | `tuipwa update <id> [options]` | Update only the specified fields |
 | `tuipwa remove <id>` | Remove a registration, not the TUI program itself |
 | `tuipwa validate <manifest.json>` | Validate a manifest |
+
+### Open files in a registered app
+
+```sh
+tuipwa run nano -- ./memo.txt "./notes with spaces.txt"
+```
+
+Specify exactly one registration ID before `--`, followed by local file paths. Files are appended to the registered arguments for this launch only. Relative paths become absolute paths based on the **directory from which you invoke the command**. Files do not need to exist yet. The app's working directory and saved registration remain unchanged.
+
+Everything after `--` is treated as a file path. Register app options using `add` / `update` instead. URLs are not interpreted, and arguments are not reinterpreted by a shell.
+
+### Register as an Open With candidate
+
+```sh
+tuipwa add nano                         # Detect MIME types from existing .desktop entries
+# Specify types explicitly, or update an existing registration
+tuipwa update nano --mime-type text/plain --mime-type text/markdown
+tuipwa show nano
+```
+
+New registrations look for an existing `.desktop` entry with a matching executable in the XDG application directories and inherit its `MimeType` declaration. This also applies to `add --manifest`. Detected types register the app as an Open With candidate in KDE and other desktops. No app-name lookup table is used and no inspected commands are executed.
+
+If detection fails or you want to override it, specify supported file types using `--mime-type`. Wrapper commands and executable paths with complex escaping are not inferred. Multiple selected local files are passed to a single app launch. Normal menu launches without files still work. **Default application settings are not changed.**
+
+On `update`, `--mime-type` replaces the supported list; omitting it keeps the list. Use `tuipwa update nano --clear-mime-types` to disable this support. If neither explicit nor detected types are available, no file-opening support is declared. Updating existing registrations does not rerun detection, preserving manual settings and disabled support. Repeat the option for each type rather than using wildcards or a semicolon-separated list.
+
+The candidate cache is refreshed using `update-desktop-database`. If the tool is missing or fails, a warning is shown, but the registration is saved. Run the command shown in the warning to refresh it later. Desktop-specific caches can also affect when candidates appear.
 
 ### Name, arguments, and working directory
 
@@ -133,6 +162,12 @@ env LC_ALL=ja_JP.UTF-8 tuipwa --help       # Japanese
 ```
 
 This language selection applies to help text only. Other output and error messages are not fully translated.
+
+## Ghostty configuration
+
+The dedicated host loads Ghostty's standard configuration files, normally `~/.config/ghostty/config` followed by `~/.config/ghostty/config.ghostty`. If `XDG_CONFIG_HOME` is set, that directory is used instead. No separate copy of font or color settings is needed for TuiPWA.
+
+TuiPWA's required launch controls, tab-free display, disabled state restoration, and disabled keybindings take priority over user configuration. The registered command, title, and working directory still apply. To ensure configuration changes take effect, close all TuiPWA windows and launch again.
 
 ## Development and specifications
 

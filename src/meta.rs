@@ -47,6 +47,34 @@ pub struct IconMeta {
     pub path: Option<String>,
 }
 
+/// Validate concrete MIME types before placing them in a desktop string list.
+/// Parameters, wildcards, whitespace and desktop-entry delimiters are rejected.
+pub fn normalize_mime_types(values: &[String]) -> Result<Vec<String>> {
+    let mut normalized = Vec::new();
+    for value in values {
+        let valid_token = |token: &str| {
+            !token.is_empty()
+                && token
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b"!#$&^_.+-".contains(&b))
+        };
+        if !value
+            .split_once('/')
+            .is_some_and(|(kind, subtype)| valid_token(kind) && valid_token(subtype))
+        {
+            return Err(format!(
+                "MIMEタイプは text/plain のような type/subtype で指定してください: {value:?}"
+            )
+            .into());
+        }
+        let value = value.to_ascii_lowercase();
+        if !normalized.contains(&value) {
+            normalized.push(value);
+        }
+    }
+    Ok(normalized)
+}
+
 /// Per registration metadata owned by TuiPWA.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -62,6 +90,9 @@ pub struct AppMeta {
     /// manifest because manifest v1 rejects unknown fields.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub categories: Option<Vec<String>>,
+    /// Local file types accepted through the desktop's Open With menu.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mime_types: Vec<String>,
 }
 
 impl AppMeta {
@@ -71,6 +102,7 @@ impl AppMeta {
             id: id.to_owned(),
             icon: None,
             categories: None,
+            mime_types: Vec::new(),
         }
     }
 

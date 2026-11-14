@@ -170,6 +170,7 @@ fn desktop_escaping_and_identity() {
     let s = entry(
         &m,
         &["Utility".to_owned()],
+        &[],
         Path::new("/opt/a b/\"$`%\\native"),
     )
     .unwrap();
@@ -177,7 +178,7 @@ fn desktop_escaping_and_identity() {
     assert!(s.contains("Categories=Utility;\n"));
     assert!(s.contains("%%"));
     assert!(s.contains("日本語\\sEditor"));
-    assert!(entry(&m, &["Utility".to_owned()], Path::new("relative")).is_err());
+    assert!(entry(&m, &["Utility".to_owned()], &[], Path::new("relative")).is_err());
     assert_ne!(desktop_id("a-b"), desktop_id("a.b"));
 }
 #[test]
@@ -712,6 +713,415 @@ fn help_selects_language_using_locale_precedence() {
     assert_eq!(flags(english), flags(japanese));
 }
 
+// --- Open With ------------------------------------------------------------
+
+#[test]
+fn mime_detection_matches_commands_and_respects_desktop_precedence() {
+    use crate::platform::linux::desktop::find_mime_types;
+    let t = Temp::new();
+    let command = executable(&t, "nano");
+    let command = command.to_str().unwrap();
+    let user = t.path("user");
+    let system = t.path("system");
+    for dir in [&user, &system] {
+        fs::create_dir_all(dir.join("applications")).unwrap();
+    }
+    let dirs = vec![user.clone(), system.clone()];
+    let desktop = user.join("applications/nano.desktop");
+    let header = "[Desktop Entry]\nType=Application\n";
+    fs::write(
+        system.join("applications/nano.desktop"),
+        format!("{header}Exec=nano %F\nMimeType=text/plain;\n"),
+    )
+    .unwrap();
+    assert_eq!(find_mime_types(command, &dirs), list(&["text/plain"]));
+    fs::write(&desktop, format!("{header}Exec=\"{command}\" %F\nNoDisplay=true\nMimeType=Text/Markdown;text/plain;text/plain;\n[Desktop Action other]\nExec=evil\nMimeType=application/evil;\n")).unwrap();
+    assert_eq!(
+        find_mime_types(command, &dirs),
+        list(&["text/markdown", "text/plain"])
+    );
+    // User entries mask the same desktop ID in system directories, even hidden.
+    fs::write(
+        &desktop,
+        format!("{header}Hidden=true\nExec=nano %F\nMimeType=text/plain;\n"),
+    )
+    .unwrap();
+    assert!(find_mime_types(command, &dirs).is_empty());
+    fs::remove_file(system.join("applications/nano.desktop")).unwrap();
+    for exec in [
+        "nanox %F",
+        "env nano %F",
+        "/unrelated/bin/nano %F",
+        "nano-wrapper %F",
+        "\"nano\"suffix %F",
+    ] {
+        fs::write(
+            &desktop,
+            format!("{header}Exec={exec}\nMimeType=text/plain;\n"),
+        )
+        .unwrap();
+        assert!(find_mime_types(command, &dirs).is_empty(), "{exec}");
+    }
+    fs::write(
+        &desktop,
+        format!("{header}Exec=nano %F\nMimeType=text/plain;bad;\n"),
+    )
+    .unwrap();
+    assert!(find_mime_types(command, &dirs).is_empty());
+    fs::write(
+        &desktop,
+        format!("{header}Exec=nano %F\nMimeType=text/plain;\nX-TuiPWA-Id=custom\n"),
+    )
+    .unwrap();
+    assert!(find_mime_types(command, &dirs).is_empty());
+    // Quoted executable paths containing spaces can also be identified.
+    let spaced = t.path("path with spaces/nano");
+    fs::write(
+        &desktop,
+        format!(
+            "{header}Exec=\"{}\" %F\nMimeType=text/plain;\n",
+            spaced.display()
+        ),
+    )
+    .unwrap();
+    assert_eq!(
+        find_mime_types(spaced.to_str().unwrap(), &dirs),
+        list(&["text/plain"])
+    );
+}
+
+#[test]
+fn add_detects_mime_types_but_explicit_values_and_later_updates_take_priority() {
+    let t = Temp::new();
+    let c = context(&t);
+    executable(&t, "nano");
+    let applications = c.data_dirs[0].join("applications");
+    fs::create_dir_all(&applications).unwrap();
+    fs::write(
+        applications.join("nano.desktop"),
+        "[Desktop Entry]\nType=Application\nExec=nano %F\nMimeType=text/plain;\n",
+    )
+    .unwrap();
+    let icon = t.path("icon.png");
+    crate::icons::png::write_png(&icon, &[0u8; 4], 1, 1).unwrap();
+    let defaults = t.path("config/mimeapps.list");
+    fs::write(
+        &defaults,
+        "[Default Applications]\ntext/plain=other.desktop;\n",
+    )
+    .unwrap();
+    cli::execute(
+        &args(&["add", "nano", "--icon", icon.to_str().unwrap()]),
+        &c,
+    )
+    .unwrap();
+    let meta_path = c.registry.meta_path("nano").unwrap();
+    assert_eq!(
+        AppMeta::load(&meta_path).unwrap().unwrap().mime_types,
+        list(&["text/plain"])
+    );
+    let desktop_path = c.registry.desktop_path("nano").unwrap();
+    let desktop = fs::read_to_string(desktop_path).unwrap();
+    assert!(desktop.contains(" -- %F\nMimeType=text/plain;\n"));
+    cli::execute(
+        &args(&[
+            "add",
+            "nano",
+            "--id",
+            "manual",
+            "--icon",
+            icon.to_str().unwrap(),
+            "--mime-type",
+            "text/markdown",
+        ]),
+        &c,
+    )
+    .unwrap();
+    let manual = c.registry.meta_path("manual").unwrap();
+    assert_eq!(
+        AppMeta::load(&manual).unwrap().unwrap().mime_types,
+        list(&["text/markdown"])
+    );
+    cli::execute(&args(&["update", "manual", "--title", "Manual"]), &c).unwrap();
+    assert_eq!(
+        AppMeta::load(&manual).unwrap().unwrap().mime_types,
+        list(&["text/markdown"])
+    );
+    cli::execute(&args(&["update", "nano", "--clear-mime-types"]), &c).unwrap();
+    cli::execute(&args(&["update", "nano", "--title", "Editor"]), &c).unwrap();
+    assert!(
+        AppMeta::load(&meta_path)
+            .unwrap()
+            .unwrap()
+            .mime_types
+            .is_empty()
+    );
+    assert_eq!(
+        fs::read_to_string(defaults).unwrap(),
+        "[Default Applications]\ntext/plain=other.desktop;\n"
+    );
+}
+
+#[test]
+fn manifest_import_can_infer_mime_types_without_changing_v1() {
+    let t = Temp::new();
+    let c = context(&t);
+    executable(&t, "vim");
+    let applications = c.data_dirs[0].join("applications");
+    fs::create_dir_all(&applications).unwrap();
+    fs::write(
+        applications.join("vim.desktop"),
+        "[Desktop Entry]\nType=Application\nExec=vim %F\nMimeType=text/plain;\n",
+    )
+    .unwrap();
+    let icon = t.path("icon.png");
+    crate::icons::png::write_png(&icon, &[0u8; 4], 1, 1).unwrap();
+    let mut value = raw();
+    value["icon"] = serde_json::json!(icon);
+    let path = t.path("app.json");
+    fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
+    cli::execute(&args(&["add", "--manifest", path.to_str().unwrap()]), &c).unwrap();
+    assert_eq!(
+        AppMeta::load(&c.registry.meta_path("editor").unwrap())
+            .unwrap()
+            .unwrap()
+            .mime_types,
+        list(&["text/plain"])
+    );
+    assert_eq!(c.registry.load("editor").unwrap().command, "vim");
+    let saved: serde_json::Value =
+        serde_json::from_slice(&fs::read(c.registry.manifest_path("editor").unwrap()).unwrap())
+            .unwrap();
+    assert!(saved.get("mimeTypes").is_none());
+}
+
+#[test]
+fn mime_types_are_concrete_safe_and_normalized() {
+    assert_eq!(
+        crate::meta::normalize_mime_types(&list(&[
+            "Text/Plain",
+            "application/vnd.example+json",
+            "text/plain"
+        ]))
+        .unwrap(),
+        list(&["text/plain", "application/vnd.example+json"])
+    );
+    for bad in [
+        "",
+        "text",
+        "/plain",
+        "text/",
+        "text/*",
+        "*/*",
+        "text/plain;",
+        "text/plain;charset=utf-8",
+        "text/plain\nHidden=true",
+        "text/pl ain",
+        " text/plain",
+        "text/plain/extra",
+        "text/日本語",
+    ] {
+        assert!(
+            crate::meta::normalize_mime_types(&list(&[bad])).is_err(),
+            "{bad:?}"
+        );
+    }
+}
+
+#[test]
+fn mime_registration_declares_file_support_without_changing_defaults() {
+    let t = Temp::new();
+    let c = context(&t);
+    executable(&t, "nano");
+    let defaults = [
+        t.path("config/mimeapps.list"),
+        t.path("config/kde-mimeapps.list"),
+        t.path("data/applications/mimeapps.list"),
+    ];
+    for path in &defaults {
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(
+            path,
+            "[Default Applications]\ntext/plain=existing.desktop;\n",
+        )
+        .unwrap();
+    }
+    cli::execute(
+        &args(&[
+            "add",
+            "nano",
+            "--mime-type",
+            "Text/Plain",
+            "--mime-type",
+            "text/plain",
+        ]),
+        &c,
+    )
+    .unwrap();
+    let desktop_path = c.registry.desktop_path("nano").unwrap();
+    let desktop = fs::read_to_string(&desktop_path).unwrap();
+    assert!(desktop.contains(&format!(
+        "Exec=\"{}\" \"run\" \"nano\" -- %F\n",
+        c.launcher.display()
+    )));
+    assert!(desktop.contains("MimeType=text/plain;\n"));
+    assert!(desktop.contains("Terminal=false\n"));
+    assert!(!desktop.contains("%%F"));
+    let meta = AppMeta::load(&c.registry.meta_path("nano").unwrap())
+        .unwrap()
+        .unwrap();
+    assert_eq!(meta.mime_types, list(&["text/plain"]));
+    let app = c.registry.load("nano").unwrap();
+    assert!(
+        cli::describe(&app, Some(&meta), &desktop_path)
+            .unwrap()
+            .contains("対応MIMEタイプ: text/plain")
+    );
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&fs::read(c.registry.manifest_path("nano").unwrap()).unwrap())
+            .unwrap();
+    assert!(manifest.get("mimeTypes").is_none());
+    let icon = c.registry.icon_path("nano").unwrap();
+    let icon_before = fs::read(&icon).unwrap();
+    cli::execute(
+        &args(&[
+            "update",
+            "nano",
+            "--mime-type",
+            "text/markdown",
+            "--mime-type",
+            "text/plain",
+        ]),
+        &c,
+    )
+    .unwrap();
+    assert!(
+        fs::read_to_string(&desktop_path)
+            .unwrap()
+            .contains("MimeType=text/markdown;text/plain;\n")
+    );
+    cli::execute(&args(&["update", "nano", "--title", "Editor"]), &c).unwrap();
+    assert!(
+        fs::read_to_string(&desktop_path)
+            .unwrap()
+            .contains("MimeType=text/markdown;text/plain;\n")
+    );
+    cli::execute(&args(&["update", "nano", "--clear-mime-types"]), &c).unwrap();
+    let desktop = fs::read_to_string(&desktop_path).unwrap();
+    assert!(!desktop.contains("MimeType="));
+    assert!(!desktop.contains("%F"));
+    assert_eq!(fs::read(icon).unwrap(), icon_before);
+    cli::execute(&args(&["update", "nano", "--mime-type", "text/plain"]), &c).unwrap();
+    cli::execute(&args(&["remove", "nano"]), &c).unwrap();
+    assert!(!desktop_path.exists());
+    for path in defaults {
+        assert_eq!(
+            fs::read_to_string(path).unwrap(),
+            "[Default Applications]\ntext/plain=existing.desktop;\n"
+        );
+    }
+}
+
+#[test]
+fn invalid_mime_options_leave_registrations_untouched() {
+    let t = Temp::new();
+    let c = context(&t);
+    executable(&t, "nano");
+    cli::execute(&args(&["add", "nano"]), &c).unwrap();
+    let paths = [
+        c.registry.manifest_path("nano").unwrap(),
+        c.registry.meta_path("nano").unwrap(),
+        c.registry.desktop_path("nano").unwrap(),
+        c.registry.icon_path("nano").unwrap(),
+    ];
+    let before: Vec<_> = paths.iter().map(|path| fs::read(path).unwrap()).collect();
+    for bad in [
+        "",
+        "text/*",
+        "text/plain;Hidden=true",
+        "text/plain\nExec=evil",
+    ] {
+        assert!(cli::execute(&args(&["update", "nano", "--mime-type", bad]), &c).is_err());
+    }
+    assert_eq!(
+        cli::execute(
+            &args(&[
+                "update",
+                "nano",
+                "--mime-type",
+                "text/plain",
+                "--clear-mime-types"
+            ]),
+            &c
+        )
+        .unwrap(),
+        2
+    );
+    for (path, bytes) in paths.iter().zip(before) {
+        assert_eq!(fs::read(path).unwrap(), bytes);
+    }
+    executable(&t, "vim");
+    assert!(cli::execute(&args(&["add", "vim", "--mime-type", "bad"]), &c).is_err());
+    assert!(!c.registry.manifest_path("vim").unwrap().exists());
+    assert!(!c.registry.icon_path("vim").unwrap().exists());
+    let app = c.registry.load("nano").unwrap();
+    assert!(
+        entry(
+            &app,
+            &list(&["Utility"]),
+            &list(&["text/plain;Hidden=true"]),
+            &c.launcher
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn old_and_imported_registrations_do_not_accept_desktop_files_implicitly() {
+    let t = Temp::new();
+    let c = context(&t);
+    let path = t.path("app.json");
+    fs::write(&path, serde_json::to_vec(&raw()).unwrap()).unwrap();
+    assert_eq!(
+        cli::execute(
+            &args(&[
+                "add",
+                "--manifest",
+                path.to_str().unwrap(),
+                "--mime-type",
+                "text/plain"
+            ]),
+            &c
+        )
+        .unwrap(),
+        2
+    );
+    cli::execute(&args(&["add", "--manifest", path.to_str().unwrap()]), &c).unwrap();
+    let meta_path = c.registry.meta_path("editor").unwrap();
+    fs::write(&meta_path, r#"{"metaVersion":1,"id":"editor"}"#).unwrap();
+    assert!(
+        AppMeta::load(&meta_path)
+            .unwrap()
+            .unwrap()
+            .mime_types
+            .is_empty()
+    );
+    cli::execute(&args(&["update", "editor", "--title", "Editor"]), &c).unwrap();
+    let desktop = fs::read_to_string(c.registry.desktop_path("editor").unwrap()).unwrap();
+    assert!(!desktop.contains("MimeType="));
+    assert!(!desktop.contains("%F"));
+    cli::execute(
+        &args(&["update", "editor", "--mime-type", "text/plain"]),
+        &c,
+    )
+    .unwrap();
+    assert!(
+        fs::read_to_string(c.registry.desktop_path("editor").unwrap())
+            .unwrap()
+            .contains("MimeType=text/plain;\n")
+    );
+}
+
 // --- categories -----------------------------------------------------------
 
 fn list(values: &[&str]) -> Vec<String> {
@@ -761,12 +1171,12 @@ fn desktop_entry_uses_the_configured_categories() {
     let t = Temp::new();
     let m = load(&t, &raw()).unwrap();
     let launcher = Path::new("/opt/tuipwa");
-    let text = entry(&m, &list(&["System", "Monitor"]), launcher).unwrap();
+    let text = entry(&m, &list(&["System", "Monitor"]), &[], launcher).unwrap();
     assert!(text.contains("Categories=System;Monitor;\n"));
     assert!(!text.contains("Utility"));
     // Metadata is editable, so the entry validates again before writing.
-    assert!(entry(&m, &list(&["System;Hidden=true"]), launcher).is_err());
-    assert!(entry(&m, &list(&["Monitor"]), launcher).is_err());
+    assert!(entry(&m, &list(&["System;Hidden=true"]), &[], launcher).is_err());
+    assert!(entry(&m, &list(&["Monitor"]), &[], launcher).is_err());
 }
 
 #[test]
@@ -1420,6 +1830,114 @@ fn the_registration_is_isolated_from_the_real_xdg_directories() {
 }
 
 #[test]
+fn run_files_append_absolute_paths_without_changing_the_registration() {
+    let t = Temp::new();
+    let c = context(&t);
+    executable(&t, "nano");
+    cli::execute(
+        &args(&[
+            "add",
+            "nano",
+            "--cwd",
+            c.home.to_str().unwrap(),
+            "--",
+            "--linenumbers",
+        ]),
+        &c,
+    )
+    .unwrap();
+    let paths = [
+        c.registry.manifest_path("nano").unwrap(),
+        c.registry.meta_path("nano").unwrap(),
+        c.registry.desktop_path("nano").unwrap(),
+    ];
+    let before: Vec<_> = paths.iter().map(|path| fs::read(path).unwrap()).collect();
+    let absolute = t.path("absolute.txt");
+    let files = [
+        "new file.txt",
+        "日本語.txt",
+        "-filename",
+        "$(touch NEVER)",
+        "link/../memo.txt",
+        "line\nbreak.txt",
+        absolute.to_str().unwrap(),
+    ];
+    let mut command = args(&["nano", "--"]);
+    command.extend(args(&files));
+    let mut apps = cli::prepare_run_apps(&command, &c).unwrap();
+    assert_eq!(apps.len(), 1);
+    let request = LaunchRequest::new(apps.remove(0), "request".into());
+    let mut expected = args(&["--linenumbers"]);
+    expected.extend(
+        files
+            .iter()
+            .map(|file| c.cwd.join(file).to_str().unwrap().to_owned()),
+    );
+    assert_eq!(request.arguments, expected);
+    assert_eq!(request.working_directory, c.home.to_str().unwrap());
+    assert!(!t.path("new file.txt").exists());
+    assert!(!t.path("NEVER").exists());
+    for (path, bytes) in paths.iter().zip(before) {
+        assert_eq!(fs::read(path).unwrap(), bytes);
+    }
+}
+
+#[test]
+fn run_without_files_keeps_multiple_ids_and_registered_arguments() {
+    let t = Temp::new();
+    let c = context(&t);
+    for id in ["nano", "vim"] {
+        executable(&t, id);
+        cli::execute(&args(&["add", id, "--", "registered.txt"]), &c).unwrap();
+    }
+    let apps = cli::prepare_run_apps(&args(&["nano", "vim"]), &c).unwrap();
+    assert_eq!(
+        apps.iter().map(|app| app.id.as_str()).collect::<Vec<_>>(),
+        ["nano", "vim"]
+    );
+    for app in apps {
+        assert_eq!(app.arguments, args(&["registered.txt"]));
+    }
+    let apps = cli::prepare_run_apps(&args(&["nano", "--"]), &c).unwrap();
+    assert_eq!(apps[0].arguments, args(&["registered.txt"]));
+}
+
+#[test]
+fn run_rejects_ambiguous_or_invalid_file_arguments_before_launch() {
+    let t = Temp::new();
+    let c = context(&t);
+    executable(&t, "nano");
+    cli::execute(&args(&["add", "nano"]), &c).unwrap();
+    assert_eq!(cli::execute(&args(&["run"]), &c).unwrap(), 2);
+    for command in [
+        args(&["--", "memo.txt"]),
+        args(&["nano", "nano", "--", "memo.txt"]),
+        args(&["nano", "--", ""]),
+        args(&["nano", "--", "bad\0path"]),
+        args(&["nano", "memo.txt"]),
+        args(&["missing", "--", "memo.txt"]),
+    ] {
+        assert!(cli::prepare_run_apps(&command, &c).is_err(), "{command:?}");
+    }
+}
+
+#[test]
+fn run_file_paths_preserve_symlink_parent_semantics() {
+    let t = Temp::new();
+    let c = context(&t);
+    executable(&t, "nano");
+    cli::execute(&args(&["add", "nano"]), &c).unwrap();
+    fs::create_dir_all(t.path("target/sub")).unwrap();
+    fs::write(t.path("target/memo.txt"), "correct file").unwrap();
+    std::os::unix::fs::symlink(t.path("target/sub"), t.path("link")).unwrap();
+    let apps = cli::prepare_run_apps(&args(&["nano", "--", "link/../memo.txt"]), &c).unwrap();
+    assert_eq!(
+        fs::read_to_string(&apps[0].arguments[0]).unwrap(),
+        "correct file"
+    );
+}
+
+#[test]
 fn the_desktop_entry_calls_the_public_launcher() {
     let t = Temp::new();
     let c = context(&t);
@@ -1432,6 +1950,33 @@ fn the_desktop_entry_calls_the_public_launcher() {
     assert!(desktop.contains("X-TuiPWA-Id=btop"));
     assert!(desktop.contains("Icon="));
     assert!(desktop.contains(&format!("StartupWMClass={}", desktop_id("btop"))));
+}
+
+#[test]
+fn host_loads_ghostty_settings_but_keeps_standalone_app_overrides() {
+    let options = crate::platform::linux::runtime::host_args();
+    for required in [
+        "--config-default-files=true",
+        "--class=org.tuipwa.NativeHost",
+        "--gtk-single-instance=true",
+        "--initial-window=false",
+        "--quit-after-last-window-closed=true",
+        "--shell-integration=none",
+        "--confirm-close-surface=false",
+        "--window-show-tab-bar=never",
+        "--window-save-state=never",
+        "--keybind=clear",
+    ] {
+        assert!(
+            options.iter().any(|option| option == required),
+            "{required}"
+        );
+    }
+    assert!(
+        !options
+            .iter()
+            .any(|option| option.starts_with("--config-file="))
+    );
 }
 
 #[test]

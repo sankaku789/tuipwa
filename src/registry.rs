@@ -102,7 +102,7 @@ impl Registry {
         }
         let desktop = self.desktop_path(&app.id)?;
         let meta_path = self.meta_path(&app.id)?;
-        let entry = entry(app, &meta.categories(), launcher)?;
+        let entry = entry(app, &meta.categories(), &meta.mime_types, launcher)?;
         fs::create_dir_all(&self.manifests)?;
         fs::create_dir_all(&self.desktops)?;
         if desktop.exists() {
@@ -120,6 +120,8 @@ impl Registry {
         })();
         if result.is_err() {
             snapshot.restore();
+        } else if !meta.mime_types.is_empty() {
+            self.refresh_desktop_database();
         }
         result
     }
@@ -143,7 +145,10 @@ impl Registry {
         let manifest = self.manifest_path(&app.id)?;
         let desktop = self.desktop_path(&app.id)?;
         let meta_path = self.meta_path(&app.id)?;
-        let entry = entry(app, &meta.categories(), launcher)?;
+        let entry = entry(app, &meta.categories(), &meta.mime_types, launcher)?;
+        let refresh_mime_cache = !meta.mime_types.is_empty()
+            || fs::read_to_string(&desktop)
+                .is_ok_and(|s| s.lines().any(|line| line.starts_with("MimeType=")));
         fs::create_dir_all(&self.manifests)?;
         fs::create_dir_all(&self.desktops)?;
         let mut snapshot = Snapshot::new();
@@ -160,6 +165,8 @@ impl Registry {
         })();
         if result.is_err() {
             snapshot.restore();
+        } else if refresh_mime_cache {
+            self.refresh_desktop_database();
         }
         result
     }
@@ -191,7 +198,28 @@ impl Registry {
             let _ = write_atomic(&manifest, &manifest_content);
             return Err(error.into());
         }
+        if desktop_content.is_some_and(|s| s.lines().any(|line| line.starts_with("MimeType="))) {
+            self.refresh_desktop_database();
+        }
         Ok(())
+    }
+
+    /// Update supported-type discovery only; never write mimeapps.list.
+    fn refresh_desktop_database(&self) {
+        let result = std::process::Command::new("update-desktop-database")
+            .arg(&self.desktops)
+            .output();
+        let error = match result {
+            Ok(output) if output.status.success() => return,
+            Ok(output) => format!("終了ステータス: {}", output.status),
+            Err(error) => error.to_string(),
+        };
+        eprintln!(
+            "警告: 変更は保存しましたが、MIMEキャッシュの更新に失敗しました: {error}\n\
+             desktop-file-utils の update-desktop-database を導入・確認し、\n\
+             update-desktop-database {:?} を実行してください（既定アプリは変更しません）。",
+            self.desktops
+        );
     }
 
     /// Verifies that the desktop entry still belongs to this registration.
@@ -327,7 +355,12 @@ fn quote(s: &str) -> Result<String> {
     )
     .replace('\\', "\\\\"))
 }
-pub fn entry(app: &Manifest, categories: &[String], launcher: &Path) -> Result<String> {
+pub fn entry(
+    app: &Manifest,
+    categories: &[String],
+    mime_types: &[String],
+    launcher: &Path,
+) -> Result<String> {
     let path = launcher.to_str().ok_or("非UTF-8パス")?;
     if !launcher.is_absolute() || path.contains('=') {
         return Err("ランチャーは=を含まない絶対パスが必要です".into());
@@ -335,8 +368,14 @@ pub fn entry(app: &Manifest, categories: &[String], launcher: &Path) -> Result<S
     // Re-validate on the way out: metadata is user editable, and a `;` or a
     // newline must never reach the desktop entry as an extra field.
     let categories = crate::category::normalize(categories)?;
+    let mime_types = crate::meta::normalize_mime_types(mime_types)?;
+    let (file_args, mime_line) = if mime_types.is_empty() {
+        ("", String::new())
+    } else {
+        (" -- %F", format!("MimeType={};\n", mime_types.join(";")))
+    };
     Ok(format!(
-        "[Desktop Entry]\nType=Application\nVersion=1.0\nName={}\nExec={} {} {}\n{}Terminal=false\nCategories={}\nStartupWMClass={}\nX-TuiPWA-Id={}\n",
+        "[Desktop Entry]\nType=Application\nVersion=1.0\nName={}\nExec={} {} {}{file_args}\n{mime_line}{}Terminal=false\nCategories={}\nStartupWMClass={}\nX-TuiPWA-Id={}\n",
         escape(&app.name),
         quote(path)?,
         quote("run")?,

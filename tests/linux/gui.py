@@ -95,9 +95,42 @@ with tempfile.TemporaryDirectory(prefix='tuipwa-gui-') as td:
     os.environ['XDG_DATA_HOME'] = str(p / 'data')
     runtime = p / 'runtime'; runtime.mkdir(mode=0o700)
     os.environ['XDG_RUNTIME_DIR'] = str(runtime)
-    # Explicit Python argv probe, no shell interpolation. Also records child cwd.
+    # Both standard filenames and a recursive include are loaded. Included
+    # host controls must not override the TuiPWA command-line policy.
+    ghostty_config = p / 'config/ghostty'
+    ghostty_config.mkdir(parents=True)
+    (ghostty_config / 'config').write_text('background = #111111\n')
+    (ghostty_config / 'config.ghostty').write_text('background = #222222\nconfig-file = included.conf\n')
+    (ghostty_config / 'included.conf').write_text(
+        'background = #123456\nclass = org.example.NotTuiPWA\n'
+        'initial-window = true\nquit-after-last-window-closed = false\n'
+        'window-show-tab-bar = always\nkeybind = ctrl+shift+q=quit\n')
+    # Explicit Python argv probe, no shell interpolation. Also records child
+    # cwd and queries the terminal background to verify user configuration.
     argv = ['', 'a b', '"quoted"', '$(touch NEVER)', '日本語']
-    code = 'import os,sys,json,time;json.dump([sys.argv[2:],os.getcwd()],open(sys.argv[1],"w"));sys.stdout.write("\\x1b]0;attempted-override\\x07");sys.stdout.flush();time.sleep(600)'
+    code = r'''
+import json, os, select, sys, termios, time, tty
+json.dump([sys.argv[2:], os.getcwd()], open(sys.argv[1], "w"))
+saved = termios.tcgetattr(0)
+try:
+    tty.setraw(0)
+    sys.stdout.write("\x1b]11;?\x07")
+    sys.stdout.flush()
+    reply = b""
+    deadline = time.monotonic() + 15
+    while time.monotonic() < deadline:
+        ready, _, _ = select.select([0], [], [], .1)
+        if ready:
+            reply += os.read(0, 4096)
+            if b"\x07" in reply or b"\x1b\\" in reply:
+                break
+    open(sys.argv[1] + ".background", "w").write(reply.hex())
+finally:
+    termios.tcsetattr(0, termios.TCSANOW, saved)
+sys.stdout.write("\x1b]0;attempted-override\x07")
+sys.stdout.flush()
+time.sleep(600)
+'''
     def register(id, command, args):
         m = dict(schemaVersion=1, id=id, name=id, title='PoC-' + id, mode='native', command=command, arguments=args, workingDirectory=str(p))
         path = p / (id + '.json'); path.write_text(json.dumps(m))
@@ -111,11 +144,18 @@ with tempfile.TemporaryDirectory(prefix='tuipwa-gui-') as td:
     assert Path(f"/proc/{b['child_pid']}/stat").read_text().split(') ', 1)[1][0] not in 'TtZ', 'nano stopped before foreground handoff'
     wait(lambda: (p/'argv.json').exists(), 'argv probe not executed')
     assert json.loads((p/'argv.json').read_text()) == [argv, str(p)]
+    background = p / 'argv.json.background'
+    wait(background.exists, 'terminal color query did not finish')
+    reply = bytes.fromhex(background.read_text())
+    assert b'rgb:1212/3434/5656' in reply or b'rgb:12/34/56' in reply, reply
     wait(lambda: all(t in windows() for t in ['PoC-a', 'PoC-b']), 'separate titled windows missing')
     # `tuipwa run` is a short-lived launcher that already returned above. Its
     # exit must not close the windows it requested.
+    # The included user shortcut would quit the host if keybind=clear were
+    # applied before recursive includes instead of after them.
+    key('PoC-a', 'q', ('Control_L', 'Shift_L'))
     time.sleep(.5)
-    assert shown('PoC-a') and shown('PoC-b'), 'launcher exit closed a window'
+    assert shown('PoC-a') and shown('PoC-b'), 'launcher exit or user keybinding closed a window'
 
     # A signal exit closes only its own window.
     os.kill(a['child_pid'], signal.SIGTERM)
@@ -198,4 +238,4 @@ with tempfile.TemporaryDirectory(prefix='tuipwa-gui-') as td:
     with (p/'startup.log').open('w') as log:
         unused = sp.Popen([host, '--config-default-files=false', '--class=org.tuipwa.NativeHost', '--gtk-single-instance=true', '--initial-window=false', '--quit-after-last-window-closed=true'], stdout=sp.DEVNULL, stderr=log)
         assert unused.wait(timeout=40) == 0, 'unused startup host did not exit cleanly'
-    print(json.dumps({'result':'PASS', 'shared_host_pid':a['host_pid'], 'independent_ptys':[a['tty'],b['tty']], 'checks':['concurrent startup','launcher exit keeps windows','argv/cwd','nano foreground','signal exit closes only its window','nano Ctrl-X auto close','btop q auto close','vim :q auto close','immediate true/false auto close','last-window host exit','crash cleanup/restart','spawn failure window kept','runtime permissions','unused startup watchdog']}, ensure_ascii=False))
+    print(json.dumps({'result':'PASS', 'shared_host_pid':a['host_pid'], 'independent_ptys':[a['tty'],b['tty']], 'checks':['user config and recursive include background','user keybindings disabled','concurrent startup','launcher exit keeps windows','argv/cwd','nano foreground','signal exit closes only its window','nano Ctrl-X auto close','btop q auto close','vim :q auto close','immediate true/false auto close','last-window host exit','crash cleanup/restart','spawn failure window kept','runtime permissions','unused startup watchdog']}, ensure_ascii=False))

@@ -107,7 +107,7 @@ pub fn find_system_icon(command: &str, data_dirs: &[PathBuf]) -> Option<PathBuf>
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or(command);
-    for desktop in desktop_entries(data_dirs) {
+    for desktop in crate::platform::linux::desktop::entries(data_dirs) {
         let Ok(content) = std::fs::read_to_string(&desktop) else {
             continue;
         };
@@ -189,24 +189,6 @@ fn usable_icon(path: &Path) -> bool {
         Ok(metadata) => metadata.file_type().is_file(),
         Err(_) => false,
     }
-}
-
-fn desktop_entries(data_dirs: &[PathBuf]) -> Vec<PathBuf> {
-    let mut entries = Vec::new();
-    for dir in data_dirs {
-        let applications = dir.join("applications");
-        let Ok(read) = std::fs::read_dir(&applications) else {
-            continue;
-        };
-        let mut paths: Vec<PathBuf> = read.flatten().map(|e| e.path()).collect();
-        paths.sort();
-        for path in paths {
-            if path.extension().and_then(|e| e.to_str()) == Some("desktop") {
-                entries.push(path);
-            }
-        }
-    }
-    entries
 }
 
 fn theme_dirs(data_dirs: &[PathBuf]) -> Vec<PathBuf> {
