@@ -95,15 +95,17 @@ Everything after `--` is treated as a file path. Register app options using `add
 ### Register as an Open With candidate
 
 ```sh
-tuipwa add nano --mime-type text/plain
-# Update an existing registration instead
+tuipwa add nano                         # Detect MIME types from existing .desktop entries
+# Specify types explicitly, or update an existing registration
 tuipwa update nano --mime-type text/plain --mime-type text/markdown
 tuipwa show nano
 ```
 
-Specify the file types the app can open using `--mime-type` to register it as an Open With candidate in KDE and other desktops. Multiple selected local files are passed to a single app launch. Normal menu launches without files still work. **Default application settings are not changed.**
+New registrations look for an existing `.desktop` entry with a matching executable in the XDG application directories and inherit its `MimeType` declaration. This also applies to `add --manifest`. Detected types register the app as an Open With candidate in KDE and other desktops. No app-name lookup table is used and no inspected commands are executed.
 
-On `update`, `--mime-type` replaces the supported list; omitting it keeps the list. Use `tuipwa update nano --clear-mime-types` to disable this support. Registrations without MIME types do not declare file-opening support. Repeat the option for each type rather than using wildcards or a semicolon-separated list.
+If detection fails or you want to override it, specify supported file types using `--mime-type`. Wrapper commands and executable paths with complex escaping are not inferred. Multiple selected local files are passed to a single app launch. Normal menu launches without files still work. **Default application settings are not changed.**
+
+On `update`, `--mime-type` replaces the supported list; omitting it keeps the list. Use `tuipwa update nano --clear-mime-types` to disable this support. If neither explicit nor detected types are available, no file-opening support is declared. Updating existing registrations does not rerun detection, preserving manual settings and disabled support. Repeat the option for each type rather than using wildcards or a semicolon-separated list.
 
 The candidate cache is refreshed using `update-desktop-database`. If the tool is missing or fails, a warning is shown, but the registration is saved. Run the command shown in the warning to refresh it later. Desktop-specific caches can also affect when candidates appear.
 

@@ -35,7 +35,7 @@ add のオプション:
   --icon <path>        既存PNG/ICOをアイコンに使う
   --color \"#RRGGBB\"    指定色のアイコンを自動生成する
   --category <name>    デスクトップカテゴリ（複数指定可、既定はUtility）
-  --mime-type <type>   「このアプリケーションで開く」に対応するMIMEタイプ（複数指定可）
+  --mime-type <type>   対応MIMEタイプを明示指定（複数指定可、省略時は既存.desktopから取得）
   --manifest <file>    既存のJSONマニフェストから登録する
 
 update のオプション:
@@ -77,7 +77,7 @@ Add options:
   --icon <path>        Use an existing PNG/ICO icon
   --color \"#RRGGBB\"    Generate an icon with this background color
   --category <name>    Desktop category (repeatable; default: Utility)
-  --mime-type <type>   Supported MIME type for Open With (repeatable)
+  --mime-type <type>   Explicit MIME type (repeatable; otherwise detected from existing .desktop)
   --manifest <file>    Register an existing JSON manifest
 
 Update options:
@@ -447,7 +447,14 @@ fn add(args: &[String], context: &Context) -> Result<i32> {
         }
         None => context.home.clone(),
     };
-    let mime_types = crate::meta::normalize_mime_types(&options.mime_types)?;
+    let mime_types = if options.mime_types.is_empty() {
+        crate::platform::linux::desktop::find_mime_types(
+            command_path.to_str().ok_or("非UTF-8パス")?,
+            &context.data_dirs,
+        )
+    } else {
+        crate::meta::normalize_mime_types(&options.mime_types)?
+    };
     let categories = if options.categories.is_empty() {
         vec![crate::category::DEFAULT.to_owned()]
     } else {
@@ -535,8 +542,14 @@ fn add_from_manifest(path: &Path, context: &Context) -> Result<i32> {
     icons::apply(&mut app, &decision);
     let mut meta = AppMeta::new(&app.id);
     meta.set_icon(decision.to_meta());
-    // Manifest v1 has no categories; the import uses the default.
+    // Manifest v1 stays unchanged; inferred desktop capabilities live in meta.
     meta.set_categories(vec![crate::category::DEFAULT.to_owned()]);
+    if let Ok((command, _)) = resolve_command(&app.command, context) {
+        meta.mime_types = crate::platform::linux::desktop::find_mime_types(
+            command.to_str().ok_or("非UTF-8パス")?,
+            &context.data_dirs,
+        );
+    }
     if let Err(error) = registry.install(&app, &meta, &context.launcher) {
         // A generated icon of a failed registration is removed again.
         if decision.owned_by_tuipwa()

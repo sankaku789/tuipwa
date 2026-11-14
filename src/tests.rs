@@ -716,6 +716,186 @@ fn help_selects_language_using_locale_precedence() {
 // --- Open With ------------------------------------------------------------
 
 #[test]
+fn mime_detection_matches_commands_and_respects_desktop_precedence() {
+    use crate::platform::linux::desktop::find_mime_types;
+    let t = Temp::new();
+    let command = executable(&t, "nano");
+    let command = command.to_str().unwrap();
+    let user = t.path("user");
+    let system = t.path("system");
+    for dir in [&user, &system] {
+        fs::create_dir_all(dir.join("applications")).unwrap();
+    }
+    let dirs = vec![user.clone(), system.clone()];
+    let desktop = user.join("applications/nano.desktop");
+    let header = "[Desktop Entry]\nType=Application\n";
+    fs::write(
+        system.join("applications/nano.desktop"),
+        format!("{header}Exec=nano %F\nMimeType=text/plain;\n"),
+    )
+    .unwrap();
+    assert_eq!(find_mime_types(command, &dirs), list(&["text/plain"]));
+    fs::write(&desktop, format!("{header}Exec=\"{command}\" %F\nNoDisplay=true\nMimeType=Text/Markdown;text/plain;text/plain;\n[Desktop Action other]\nExec=evil\nMimeType=application/evil;\n")).unwrap();
+    assert_eq!(
+        find_mime_types(command, &dirs),
+        list(&["text/markdown", "text/plain"])
+    );
+    // User entries mask the same desktop ID in system directories, even hidden.
+    fs::write(
+        &desktop,
+        format!("{header}Hidden=true\nExec=nano %F\nMimeType=text/plain;\n"),
+    )
+    .unwrap();
+    assert!(find_mime_types(command, &dirs).is_empty());
+    fs::remove_file(system.join("applications/nano.desktop")).unwrap();
+    for exec in [
+        "nanox %F",
+        "env nano %F",
+        "/unrelated/bin/nano %F",
+        "nano-wrapper %F",
+        "\"nano\"suffix %F",
+    ] {
+        fs::write(
+            &desktop,
+            format!("{header}Exec={exec}\nMimeType=text/plain;\n"),
+        )
+        .unwrap();
+        assert!(find_mime_types(command, &dirs).is_empty(), "{exec}");
+    }
+    fs::write(
+        &desktop,
+        format!("{header}Exec=nano %F\nMimeType=text/plain;bad;\n"),
+    )
+    .unwrap();
+    assert!(find_mime_types(command, &dirs).is_empty());
+    fs::write(
+        &desktop,
+        format!("{header}Exec=nano %F\nMimeType=text/plain;\nX-TuiPWA-Id=custom\n"),
+    )
+    .unwrap();
+    assert!(find_mime_types(command, &dirs).is_empty());
+    // Quoted executable paths containing spaces can also be identified.
+    let spaced = t.path("path with spaces/nano");
+    fs::write(
+        &desktop,
+        format!(
+            "{header}Exec=\"{}\" %F\nMimeType=text/plain;\n",
+            spaced.display()
+        ),
+    )
+    .unwrap();
+    assert_eq!(
+        find_mime_types(spaced.to_str().unwrap(), &dirs),
+        list(&["text/plain"])
+    );
+}
+
+#[test]
+fn add_detects_mime_types_but_explicit_values_and_later_updates_take_priority() {
+    let t = Temp::new();
+    let c = context(&t);
+    executable(&t, "nano");
+    let applications = c.data_dirs[0].join("applications");
+    fs::create_dir_all(&applications).unwrap();
+    fs::write(
+        applications.join("nano.desktop"),
+        "[Desktop Entry]\nType=Application\nExec=nano %F\nMimeType=text/plain;\n",
+    )
+    .unwrap();
+    let icon = t.path("icon.png");
+    crate::icons::png::write_png(&icon, &[0u8; 4], 1, 1).unwrap();
+    let defaults = t.path("config/mimeapps.list");
+    fs::write(
+        &defaults,
+        "[Default Applications]\ntext/plain=other.desktop;\n",
+    )
+    .unwrap();
+    cli::execute(
+        &args(&["add", "nano", "--icon", icon.to_str().unwrap()]),
+        &c,
+    )
+    .unwrap();
+    let meta_path = c.registry.meta_path("nano").unwrap();
+    assert_eq!(
+        AppMeta::load(&meta_path).unwrap().unwrap().mime_types,
+        list(&["text/plain"])
+    );
+    let desktop_path = c.registry.desktop_path("nano").unwrap();
+    let desktop = fs::read_to_string(desktop_path).unwrap();
+    assert!(desktop.contains(" -- %F\nMimeType=text/plain;\n"));
+    cli::execute(
+        &args(&[
+            "add",
+            "nano",
+            "--id",
+            "manual",
+            "--icon",
+            icon.to_str().unwrap(),
+            "--mime-type",
+            "text/markdown",
+        ]),
+        &c,
+    )
+    .unwrap();
+    let manual = c.registry.meta_path("manual").unwrap();
+    assert_eq!(
+        AppMeta::load(&manual).unwrap().unwrap().mime_types,
+        list(&["text/markdown"])
+    );
+    cli::execute(&args(&["update", "manual", "--title", "Manual"]), &c).unwrap();
+    assert_eq!(
+        AppMeta::load(&manual).unwrap().unwrap().mime_types,
+        list(&["text/markdown"])
+    );
+    cli::execute(&args(&["update", "nano", "--clear-mime-types"]), &c).unwrap();
+    cli::execute(&args(&["update", "nano", "--title", "Editor"]), &c).unwrap();
+    assert!(
+        AppMeta::load(&meta_path)
+            .unwrap()
+            .unwrap()
+            .mime_types
+            .is_empty()
+    );
+    assert_eq!(
+        fs::read_to_string(defaults).unwrap(),
+        "[Default Applications]\ntext/plain=other.desktop;\n"
+    );
+}
+
+#[test]
+fn manifest_import_can_infer_mime_types_without_changing_v1() {
+    let t = Temp::new();
+    let c = context(&t);
+    executable(&t, "vim");
+    let applications = c.data_dirs[0].join("applications");
+    fs::create_dir_all(&applications).unwrap();
+    fs::write(
+        applications.join("vim.desktop"),
+        "[Desktop Entry]\nType=Application\nExec=vim %F\nMimeType=text/plain;\n",
+    )
+    .unwrap();
+    let icon = t.path("icon.png");
+    crate::icons::png::write_png(&icon, &[0u8; 4], 1, 1).unwrap();
+    let mut value = raw();
+    value["icon"] = serde_json::json!(icon);
+    let path = t.path("app.json");
+    fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
+    cli::execute(&args(&["add", "--manifest", path.to_str().unwrap()]), &c).unwrap();
+    assert_eq!(
+        AppMeta::load(&c.registry.meta_path("editor").unwrap())
+            .unwrap()
+            .unwrap()
+            .mime_types,
+        list(&["text/plain"])
+    );
+    assert_eq!(c.registry.load("editor").unwrap().command, "vim");
+    let saved: serde_json::Value =
+        serde_json::from_slice(&fs::read(c.registry.manifest_path("editor").unwrap()).unwrap())
+            .unwrap();
+    assert!(saved.get("mimeTypes").is_none());
+}
+
+#[test]
 fn mime_types_are_concrete_safe_and_normalized() {
     assert_eq!(
         crate::meta::normalize_mime_types(&list(&[
