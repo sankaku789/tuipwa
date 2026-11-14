@@ -121,3 +121,18 @@ index 08d5d7c..429a53f 100644
      }
  
      fn initAndShowWindow(
+diff --git a/src/config/Config.zig b/src/config/Config.zig
+--- a/src/config/Config.zig
++++ b/src/config/Config.zig
+@@ -4062,1 +4062,8 @@ pub fn load(alloc_gpa: Allocator) !Config {
+     try result.loadCliArgs(alloc_gpa);
++    // TuiPWA loads user appearance settings, but its host controls must win
++    // even over config-file includes. Capture identity before includes can
++    // change class, then reapply the launcher's CLI options after loading.
++    const tuipwa_host = if (result.class) |class|
++        std.mem.eql(u8, class, "org.tuipwa.NativeHost")
++    else
++        false;
+@@ -4065,1 +4072,2 @@ pub fn load(alloc_gpa: Allocator) !Config {
+     try result.loadRecursiveFiles(alloc_gpa);
++    if (tuipwa_host) try result.loadCliArgs(alloc_gpa);

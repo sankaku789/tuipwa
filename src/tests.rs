@@ -1953,6 +1953,33 @@ fn the_desktop_entry_calls_the_public_launcher() {
 }
 
 #[test]
+fn host_loads_ghostty_settings_but_keeps_standalone_app_overrides() {
+    let options = crate::platform::linux::runtime::host_args();
+    for required in [
+        "--config-default-files=true",
+        "--class=org.tuipwa.NativeHost",
+        "--gtk-single-instance=true",
+        "--initial-window=false",
+        "--quit-after-last-window-closed=true",
+        "--shell-integration=none",
+        "--confirm-close-surface=false",
+        "--window-show-tab-bar=never",
+        "--window-save-state=never",
+        "--keybind=clear",
+    ] {
+        assert!(
+            options.iter().any(|option| option == required),
+            "{required}"
+        );
+    }
+    assert!(
+        !options
+            .iter()
+            .any(|option| option.starts_with("--config-file="))
+    );
+}
+
+#[test]
 fn host_lookup_supports_user_install_and_existing_priorities() {
     use crate::platform::linux::runtime::resolve_host_path;
     let t = Temp::new();

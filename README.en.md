@@ -163,6 +163,12 @@ env LC_ALL=ja_JP.UTF-8 tuipwa --help       # Japanese
 
 This language selection applies to help text only. Other output and error messages are not fully translated.
 
+## Ghostty configuration
+
+The dedicated host loads Ghostty's standard configuration files, normally `~/.config/ghostty/config` followed by `~/.config/ghostty/config.ghostty`. If `XDG_CONFIG_HOME` is set, that directory is used instead. No separate copy of font or color settings is needed for TuiPWA.
+
+TuiPWA's required launch controls, tab-free display, disabled state restoration, and disabled keybindings take priority over user configuration. The registered command, title, and working directory still apply. To ensure configuration changes take effect, close all TuiPWA windows and launch again.
+
 ## Development and specifications
 
 - [CONTRIBUTING.md](CONTRIBUTING.md) (Japanese) — dev builds, tests, dependencies, internals, distribution, and desktop checks

@@ -152,6 +152,22 @@ pub(crate) fn resolve_host_path(
     }
     Err("Ghosttyホストが見つかりません。`make install` で導入するか、TUIPWA_GHOSTTY にパッチ済みホストの絶対パスを指定してください".into())
 }
+/// User appearance settings are loaded normally; standalone-app controls win.
+pub(crate) fn host_args() -> Vec<String> {
+    vec![
+        "--config-default-files=true".into(),
+        format!("--class={HOST}"),
+        "--gtk-single-instance=true".into(),
+        "--initial-window=false".into(),
+        "--quit-after-last-window-closed=true".into(),
+        "--shell-integration=none".into(),
+        "--confirm-close-surface=false".into(),
+        "--window-show-tab-bar=never".into(),
+        "--window-save-state=never".into(),
+        "--keybind=clear".into(),
+    ]
+}
+
 fn start_host(dir: &Path) -> Result<std::process::Child> {
     let log = OpenOptions::new()
         .append(true)
@@ -160,21 +176,10 @@ fn start_host(dir: &Path) -> Result<std::process::Child> {
         .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
         .open(dir.join("host.log"))?;
     let mut cmd = Command::new(host_path()?);
-    cmd.args([
-        "--config-default-files=false",
-        &format!("--class={HOST}"),
-        "--gtk-single-instance=true",
-        "--initial-window=false",
-        "--quit-after-last-window-closed=true",
-        "--shell-integration=none",
-        "--confirm-close-surface=false",
-        "--window-show-tab-bar=never",
-        "--window-save-state=never",
-        "--keybind=clear",
-    ])
-    .stdin(Stdio::null())
-    .stdout(Stdio::null())
-    .stderr(Stdio::from(log));
+    cmd.args(host_args())
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::from(log));
     // Detach the GUI from the short-lived launcher/desktop activation process group.
     unsafe {
         cmd.pre_exec(|| {
