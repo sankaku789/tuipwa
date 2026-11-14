@@ -34,6 +34,7 @@ The table below lists **tool and library names, not package names**. Use your OS
 | GPU rendering | SPIRV-Cross, EGL / OpenGL (a graphics driver suitable for your system is also required) |
 | Wayland / X11 and keyboard input | Wayland, wayland-protocols, libxkbcommon, X11, libXcursor, libXi, libXrandr |
 | Icons and display fonts | Adwaita / hicolor icon themes, system fonts |
+| Refreshing Open With candidates (when used) | `update-desktop-database` from desktop-file-utils |
 
 See [dependencies and tools](CONTRIBUTING.md#依存ライブラリツール) (Japanese) for details on their roles and build-time handling.
 
@@ -89,7 +90,22 @@ tuipwa run nano -- ./memo.txt "./notes with spaces.txt"
 
 Specify exactly one registration ID before `--`, followed by local file paths. Files are appended to the registered arguments for this launch only. Relative paths become absolute paths based on the **directory from which you invoke the command**. Files do not need to exist yet. The app's working directory and saved registration remain unchanged.
 
-Everything after `--` is treated as a file path. Register app options using `add` / `update` instead. URLs are not interpreted, and arguments are not reinterpreted by a shell. Automatic registration for KDE or other desktops' “Open With” menus and default file associations is not supported yet.
+Everything after `--` is treated as a file path. Register app options using `add` / `update` instead. URLs are not interpreted, and arguments are not reinterpreted by a shell.
+
+### Register as an Open With candidate
+
+```sh
+tuipwa add nano --mime-type text/plain
+# Update an existing registration instead
+tuipwa update nano --mime-type text/plain --mime-type text/markdown
+tuipwa show nano
+```
+
+Specify the file types the app can open using `--mime-type` to register it as an Open With candidate in KDE and other desktops. Multiple selected local files are passed to a single app launch. Normal menu launches without files still work. **Default application settings are not changed.**
+
+On `update`, `--mime-type` replaces the supported list; omitting it keeps the list. Use `tuipwa update nano --clear-mime-types` to disable this support. Registrations without MIME types do not declare file-opening support. Repeat the option for each type rather than using wildcards or a semicolon-separated list.
+
+The candidate cache is refreshed using `update-desktop-database`. If the tool is missing or fails, a warning is shown, but the registration is saved. Run the command shown in the warning to refresh it later. Desktop-specific caches can also affect when candidates appear.
 
 ### Name, arguments, and working directory
 

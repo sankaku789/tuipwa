@@ -170,6 +170,7 @@ fn desktop_escaping_and_identity() {
     let s = entry(
         &m,
         &["Utility".to_owned()],
+        &[],
         Path::new("/opt/a b/\"$`%\\native"),
     )
     .unwrap();
@@ -177,7 +178,7 @@ fn desktop_escaping_and_identity() {
     assert!(s.contains("Categories=Utility;\n"));
     assert!(s.contains("%%"));
     assert!(s.contains("日本語\\sEditor"));
-    assert!(entry(&m, &["Utility".to_owned()], Path::new("relative")).is_err());
+    assert!(entry(&m, &["Utility".to_owned()], &[], Path::new("relative")).is_err());
     assert_ne!(desktop_id("a-b"), desktop_id("a.b"));
 }
 #[test]
@@ -712,6 +713,235 @@ fn help_selects_language_using_locale_precedence() {
     assert_eq!(flags(english), flags(japanese));
 }
 
+// --- Open With ------------------------------------------------------------
+
+#[test]
+fn mime_types_are_concrete_safe_and_normalized() {
+    assert_eq!(
+        crate::meta::normalize_mime_types(&list(&[
+            "Text/Plain",
+            "application/vnd.example+json",
+            "text/plain"
+        ]))
+        .unwrap(),
+        list(&["text/plain", "application/vnd.example+json"])
+    );
+    for bad in [
+        "",
+        "text",
+        "/plain",
+        "text/",
+        "text/*",
+        "*/*",
+        "text/plain;",
+        "text/plain;charset=utf-8",
+        "text/plain\nHidden=true",
+        "text/pl ain",
+        " text/plain",
+        "text/plain/extra",
+        "text/日本語",
+    ] {
+        assert!(
+            crate::meta::normalize_mime_types(&list(&[bad])).is_err(),
+            "{bad:?}"
+        );
+    }
+}
+
+#[test]
+fn mime_registration_declares_file_support_without_changing_defaults() {
+    let t = Temp::new();
+    let c = context(&t);
+    executable(&t, "nano");
+    let defaults = [
+        t.path("config/mimeapps.list"),
+        t.path("config/kde-mimeapps.list"),
+        t.path("data/applications/mimeapps.list"),
+    ];
+    for path in &defaults {
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(
+            path,
+            "[Default Applications]\ntext/plain=existing.desktop;\n",
+        )
+        .unwrap();
+    }
+    cli::execute(
+        &args(&[
+            "add",
+            "nano",
+            "--mime-type",
+            "Text/Plain",
+            "--mime-type",
+            "text/plain",
+        ]),
+        &c,
+    )
+    .unwrap();
+    let desktop_path = c.registry.desktop_path("nano").unwrap();
+    let desktop = fs::read_to_string(&desktop_path).unwrap();
+    assert!(desktop.contains(&format!(
+        "Exec=\"{}\" \"run\" \"nano\" -- %F\n",
+        c.launcher.display()
+    )));
+    assert!(desktop.contains("MimeType=text/plain;\n"));
+    assert!(desktop.contains("Terminal=false\n"));
+    assert!(!desktop.contains("%%F"));
+    let meta = AppMeta::load(&c.registry.meta_path("nano").unwrap())
+        .unwrap()
+        .unwrap();
+    assert_eq!(meta.mime_types, list(&["text/plain"]));
+    let app = c.registry.load("nano").unwrap();
+    assert!(
+        cli::describe(&app, Some(&meta), &desktop_path)
+            .unwrap()
+            .contains("対応MIMEタイプ: text/plain")
+    );
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&fs::read(c.registry.manifest_path("nano").unwrap()).unwrap())
+            .unwrap();
+    assert!(manifest.get("mimeTypes").is_none());
+    let icon = c.registry.icon_path("nano").unwrap();
+    let icon_before = fs::read(&icon).unwrap();
+    cli::execute(
+        &args(&[
+            "update",
+            "nano",
+            "--mime-type",
+            "text/markdown",
+            "--mime-type",
+            "text/plain",
+        ]),
+        &c,
+    )
+    .unwrap();
+    assert!(
+        fs::read_to_string(&desktop_path)
+            .unwrap()
+            .contains("MimeType=text/markdown;text/plain;\n")
+    );
+    cli::execute(&args(&["update", "nano", "--title", "Editor"]), &c).unwrap();
+    assert!(
+        fs::read_to_string(&desktop_path)
+            .unwrap()
+            .contains("MimeType=text/markdown;text/plain;\n")
+    );
+    cli::execute(&args(&["update", "nano", "--clear-mime-types"]), &c).unwrap();
+    let desktop = fs::read_to_string(&desktop_path).unwrap();
+    assert!(!desktop.contains("MimeType="));
+    assert!(!desktop.contains("%F"));
+    assert_eq!(fs::read(icon).unwrap(), icon_before);
+    cli::execute(&args(&["update", "nano", "--mime-type", "text/plain"]), &c).unwrap();
+    cli::execute(&args(&["remove", "nano"]), &c).unwrap();
+    assert!(!desktop_path.exists());
+    for path in defaults {
+        assert_eq!(
+            fs::read_to_string(path).unwrap(),
+            "[Default Applications]\ntext/plain=existing.desktop;\n"
+        );
+    }
+}
+
+#[test]
+fn invalid_mime_options_leave_registrations_untouched() {
+    let t = Temp::new();
+    let c = context(&t);
+    executable(&t, "nano");
+    cli::execute(&args(&["add", "nano"]), &c).unwrap();
+    let paths = [
+        c.registry.manifest_path("nano").unwrap(),
+        c.registry.meta_path("nano").unwrap(),
+        c.registry.desktop_path("nano").unwrap(),
+        c.registry.icon_path("nano").unwrap(),
+    ];
+    let before: Vec<_> = paths.iter().map(|path| fs::read(path).unwrap()).collect();
+    for bad in [
+        "",
+        "text/*",
+        "text/plain;Hidden=true",
+        "text/plain\nExec=evil",
+    ] {
+        assert!(cli::execute(&args(&["update", "nano", "--mime-type", bad]), &c).is_err());
+    }
+    assert_eq!(
+        cli::execute(
+            &args(&[
+                "update",
+                "nano",
+                "--mime-type",
+                "text/plain",
+                "--clear-mime-types"
+            ]),
+            &c
+        )
+        .unwrap(),
+        2
+    );
+    for (path, bytes) in paths.iter().zip(before) {
+        assert_eq!(fs::read(path).unwrap(), bytes);
+    }
+    executable(&t, "vim");
+    assert!(cli::execute(&args(&["add", "vim", "--mime-type", "bad"]), &c).is_err());
+    assert!(!c.registry.manifest_path("vim").unwrap().exists());
+    assert!(!c.registry.icon_path("vim").unwrap().exists());
+    let app = c.registry.load("nano").unwrap();
+    assert!(
+        entry(
+            &app,
+            &list(&["Utility"]),
+            &list(&["text/plain;Hidden=true"]),
+            &c.launcher
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn old_and_imported_registrations_do_not_accept_desktop_files_implicitly() {
+    let t = Temp::new();
+    let c = context(&t);
+    let path = t.path("app.json");
+    fs::write(&path, serde_json::to_vec(&raw()).unwrap()).unwrap();
+    assert_eq!(
+        cli::execute(
+            &args(&[
+                "add",
+                "--manifest",
+                path.to_str().unwrap(),
+                "--mime-type",
+                "text/plain"
+            ]),
+            &c
+        )
+        .unwrap(),
+        2
+    );
+    cli::execute(&args(&["add", "--manifest", path.to_str().unwrap()]), &c).unwrap();
+    let meta_path = c.registry.meta_path("editor").unwrap();
+    fs::write(&meta_path, r#"{"metaVersion":1,"id":"editor"}"#).unwrap();
+    assert!(
+        AppMeta::load(&meta_path)
+            .unwrap()
+            .unwrap()
+            .mime_types
+            .is_empty()
+    );
+    cli::execute(&args(&["update", "editor", "--title", "Editor"]), &c).unwrap();
+    let desktop = fs::read_to_string(c.registry.desktop_path("editor").unwrap()).unwrap();
+    assert!(!desktop.contains("MimeType="));
+    assert!(!desktop.contains("%F"));
+    cli::execute(
+        &args(&["update", "editor", "--mime-type", "text/plain"]),
+        &c,
+    )
+    .unwrap();
+    assert!(
+        fs::read_to_string(c.registry.desktop_path("editor").unwrap())
+            .unwrap()
+            .contains("MimeType=text/plain;\n")
+    );
+}
+
 // --- categories -----------------------------------------------------------
 
 fn list(values: &[&str]) -> Vec<String> {
@@ -761,12 +991,12 @@ fn desktop_entry_uses_the_configured_categories() {
     let t = Temp::new();
     let m = load(&t, &raw()).unwrap();
     let launcher = Path::new("/opt/tuipwa");
-    let text = entry(&m, &list(&["System", "Monitor"]), launcher).unwrap();
+    let text = entry(&m, &list(&["System", "Monitor"]), &[], launcher).unwrap();
     assert!(text.contains("Categories=System;Monitor;\n"));
     assert!(!text.contains("Utility"));
     // Metadata is editable, so the entry validates again before writing.
-    assert!(entry(&m, &list(&["System;Hidden=true"]), launcher).is_err());
-    assert!(entry(&m, &list(&["Monitor"]), launcher).is_err());
+    assert!(entry(&m, &list(&["System;Hidden=true"]), &[], launcher).is_err());
+    assert!(entry(&m, &list(&["Monitor"]), &[], launcher).is_err());
 }
 
 #[test]

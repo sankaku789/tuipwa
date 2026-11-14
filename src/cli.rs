@@ -35,6 +35,7 @@ add のオプション:
   --icon <path>        既存PNG/ICOをアイコンに使う
   --color \"#RRGGBB\"    指定色のアイコンを自動生成する
   --category <name>    デスクトップカテゴリ（複数指定可、既定はUtility）
+  --mime-type <type>   「このアプリケーションで開く」に対応するMIMEタイプ（複数指定可）
   --manifest <file>    既存のJSONマニフェストから登録する
 
 update のオプション:
@@ -47,6 +48,8 @@ update のオプション:
   --auto-icon          TuiPWAが自動生成するアイコンに戻す
   --category <name>    デスクトップカテゴリを置き換える（複数指定可）
   --reset-categories   デスクトップカテゴリをUtilityへ戻す
+  --mime-type <type>   対応するMIMEタイプを置き換える（複数指定可、既定アプリは変更しません）
+  --clear-mime-types   ファイルを開く対応を解除する
   --clear-args         引数を空にする";
 
 const USAGE_EN: &str = "\
@@ -74,6 +77,7 @@ Add options:
   --icon <path>        Use an existing PNG/ICO icon
   --color \"#RRGGBB\"    Generate an icon with this background color
   --category <name>    Desktop category (repeatable; default: Utility)
+  --mime-type <type>   Supported MIME type for Open With (repeatable)
   --manifest <file>    Register an existing JSON manifest
 
 Update options:
@@ -86,6 +90,8 @@ Update options:
   --auto-icon          Restore a TuiPWA-generated icon
   --category <name>    Replace desktop categories (repeatable)
   --reset-categories   Reset desktop categories to Utility
+  --mime-type <type>   Replace supported MIME types (repeatable; no default app changes)
+  --clear-mime-types   Disable desktop file-opening support
   --clear-args         Clear all arguments";
 
 pub(crate) fn usage_for_locale(
@@ -183,6 +189,7 @@ struct AddOptions {
     icon: Option<PathBuf>,
     color: Option<String>,
     categories: Vec<String>,
+    mime_types: Vec<String>,
     command: Option<String>,
     arguments: Vec<String>,
 }
@@ -199,6 +206,8 @@ struct UpdateOptions {
     categories: Vec<String>,
     auto_icon: bool,
     reset_categories: bool,
+    mime_types: Vec<String>,
+    clear_mime_types: bool,
     clear_args: bool,
     arguments: Option<Vec<String>>,
 }
@@ -347,7 +356,15 @@ fn add(args: &[String], context: &Context) -> Result<i32> {
     let scanned = match scan(
         args,
         &[
-            "manifest", "id", "name", "title", "cwd", "icon", "color", "category",
+            "manifest",
+            "id",
+            "name",
+            "title",
+            "cwd",
+            "icon",
+            "color",
+            "category",
+            "mime-type",
         ],
         &[],
     ) {
@@ -371,6 +388,10 @@ fn add(args: &[String], context: &Context) -> Result<i32> {
             .into_iter()
             .map(str::to_owned)
             .collect(),
+        mime_types: all(&scanned.values, "mime-type")
+            .into_iter()
+            .map(str::to_owned)
+            .collect(),
         command: scanned.positionals.first().cloned(),
         arguments: scanned.arguments.clone(),
     };
@@ -385,6 +406,7 @@ fn add(args: &[String], context: &Context) -> Result<i32> {
             || options.icon.is_some()
             || options.color.is_some()
             || !options.categories.is_empty()
+            || !options.mime_types.is_empty()
             || options.command.is_some()
         {
             return usage_error("--manifest と他の追加オプションは同時に指定できません");
@@ -425,6 +447,7 @@ fn add(args: &[String], context: &Context) -> Result<i32> {
         }
         None => context.home.clone(),
     };
+    let mime_types = crate::meta::normalize_mime_types(&options.mime_types)?;
     let categories = if options.categories.is_empty() {
         vec![crate::category::DEFAULT.to_owned()]
     } else {
@@ -468,6 +491,7 @@ fn add(args: &[String], context: &Context) -> Result<i32> {
     let mut meta = AppMeta::new(&app.id);
     meta.set_icon(decision.to_meta());
     meta.set_categories(categories);
+    meta.mime_types = mime_types;
     if let Err(error) = registry.install(&app, &meta, &context.launcher) {
         // A generated icon of a failed registration is removed again.
         if decision.owned_by_tuipwa()
@@ -595,7 +619,7 @@ pub fn describe(app: &Manifest, meta: Option<&AppMeta>, desktop: &Path) -> Resul
         None => ("未記録".to_owned(), app.icon.clone().unwrap_or_default()),
     };
     Ok(format!(
-        "ID: {}\n表示名: {}\nウィンドウタイトル: {}\n実行コマンド: {}\n引数: {}\n作業ディレクトリ: {}\nカテゴリ: {}\nアイコン設定方式: {}\nアイコン参照先: {}\ndesktopエントリ: {}",
+        "ID: {}\n表示名: {}\nウィンドウタイトル: {}\n実行コマンド: {}\n引数: {}\n作業ディレクトリ: {}\nカテゴリ: {}\n対応MIMEタイプ: {}\nアイコン設定方式: {}\nアイコン参照先: {}\ndesktopエントリ: {}",
         app.id,
         app.name,
         app.title.clone().unwrap_or_default(),
@@ -607,6 +631,9 @@ pub fn describe(app: &Manifest, meta: Option<&AppMeta>, desktop: &Path) -> Resul
         },
         app.working_directory.clone().unwrap_or_default(),
         crate::category::desktop_value(&categories),
+        meta.filter(|m| !m.mime_types.is_empty())
+            .map(|m| m.mime_types.join(";"))
+            .unwrap_or_else(|| "(なし)".to_owned()),
         source,
         reference,
         desktop.display()
@@ -617,9 +644,22 @@ fn update(args: &[String], context: &Context) -> Result<i32> {
     let scanned = match scan(
         args,
         &[
-            "name", "title", "cwd", "command", "icon", "color", "id", "category",
+            "name",
+            "title",
+            "cwd",
+            "command",
+            "icon",
+            "color",
+            "id",
+            "category",
+            "mime-type",
         ],
-        &["auto-icon", "clear-args", "reset-categories"],
+        &[
+            "auto-icon",
+            "clear-args",
+            "reset-categories",
+            "clear-mime-types",
+        ],
     ) {
         Ok(scanned) => scanned,
         Err(message) => return usage_error(&message),
@@ -649,6 +689,11 @@ fn update(args: &[String], context: &Context) -> Result<i32> {
             .collect(),
         auto_icon: has(&scanned.values, "auto-icon"),
         reset_categories: has(&scanned.values, "reset-categories"),
+        mime_types: all(&scanned.values, "mime-type")
+            .into_iter()
+            .map(str::to_owned)
+            .collect(),
+        clear_mime_types: has(&scanned.values, "clear-mime-types"),
         clear_args: has(&scanned.values, "clear-args"),
         arguments: if scanned.arguments.is_empty() {
             None
@@ -665,11 +710,21 @@ fn update(args: &[String], context: &Context) -> Result<i32> {
     if options.reset_categories && !options.categories.is_empty() {
         return usage_error("--reset-categories と --category は同時に指定できません");
     }
+    if options.clear_mime_types && !options.mime_types.is_empty() {
+        return usage_error("--clear-mime-types と --mime-type は同時に指定できません");
+    }
     if options.clear_args && options.arguments.is_some() {
         return usage_error("--clear-args と -- の引数は同時に指定できません");
     }
     // Validate before any file is touched so an invalid list never reaches the
     // metadata or the desktop entry.
+    let mime_types = if options.clear_mime_types {
+        Some(Vec::new())
+    } else if options.mime_types.is_empty() {
+        None
+    } else {
+        Some(crate::meta::normalize_mime_types(&options.mime_types)?)
+    };
     let categories = if options.reset_categories {
         Some(vec![crate::category::DEFAULT.to_owned()])
     } else if options.categories.is_empty() {
@@ -756,6 +811,9 @@ fn update(args: &[String], context: &Context) -> Result<i32> {
     let mut meta = meta.unwrap_or_else(|| AppMeta::new(&id));
     if let Some(categories) = categories {
         meta.set_categories(categories);
+    }
+    if let Some(mime_types) = mime_types {
+        meta.mime_types = mime_types;
     }
     if let Some(decision) = &decision {
         meta.set_icon(decision.to_meta());

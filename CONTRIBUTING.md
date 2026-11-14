@@ -129,7 +129,7 @@ Rust CLI (manifest / registry)
 - `model.rs`: プラットフォーム非依存のManifest/LaunchRequest v1。
 - `registry.rs`: Linux XDGとdesktop。GTK/PTYへの依存はありません。
 - `icons/render.rs` / `icons/font.rs` / `icons/png.rs`: アイコン生成。外部サービスやスクリプトに依存しません。
-- `icons/mod.rs` / `meta.rs`: アイコン決定とメタデータ管理（カテゴリを含みます）。
+- `icons/mod.rs` / `meta.rs`: アイコン決定とメタデータ管理（カテゴリ・対応MIMEタイプを含みます）。
 - `category.rs`: freedesktop.org のカテゴリ検証・正規化。
 - `cli.rs`: 公開コマンドの引数解析と実装。
 - `platform/linux/runtime.rs` / `platform/linux/ipc.c`: D-Bus、起動競合、同一ユーザーUnixソケット、セッション管理。
@@ -183,9 +183,11 @@ TUIPWA=/opt/tuipwa/dist/bin/tuipwa        # dist を置いた場所
 5. **更新の反映**: `tuipwa update notes --color "#0F766E"`のあと、既存ウィンドウではなく**次回起動**から新アイコンが出るか確認してください。タスクバーの既存アイコンはキャッシュされるため、古いアイコンのままでも仕様どおりです。
 6. **カテゴリ表示**: `tuipwa add btop --category System --category Monitor`のあと、Plasmaのメニューで想定した階層に表示されるか確認してください。`tuipwa show btop`の`カテゴリ:`行と`~/.local/share/applications/tuipwa-btop.desktop`の`Categories=`が一致していることを先に確認します。メニュー反映はデスクトップ環境のキャッシュに依存するため、本リポジトリの自動テスト対象外です。
 
+7. **ファイルを開く**: `tuipwa update nano --mime-type text/plain`のあと、Dolphinで空白・日本語を含む名前のテキストファイルを複数選び、「このアプリケーションで開く」から登録したnanoへ渡してください。`.desktop`の`Exec=`の末尾が`-- %F`、`MimeType=`が`text/plain;`になっていることと、`update-desktop-database`の警告がないことを先に確認します。通常のメニュー起動も維持されること、`--clear-mime-types`で対応を解除できること、既定アプリの設定が変更されないことを確認してください。KDE実機での候補表示は未検証です。
+
 ## 変更時の注意
 
-- manifest v1 にプラットフォーム固有のフィールドを追加せず、アイコン・カテゴリの追加情報は `meta` に分離します。
+- manifest v1 にプラットフォーム固有のフィールドを追加せず、アイコン・カテゴリ・対応MIMEタイプの追加情報は `meta` に分離します。
 - 登録の複数ファイル更新は完全には原子的ではありません。各ファイルは一時ファイル＋renameで更新し、途中失敗にはロールバックしますが、強制終了時まで保証しません。
 - `.desktop` の所有者確認、引数・フィールドのエスケープ、管理領域外への書き込み・削除の拒否を維持してください。
 - テストや調査では一時 XDG 領域を使い、実ユーザーの登録・既存 Ghostty を変更しないでください。
